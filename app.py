@@ -85,7 +85,7 @@ if enviado:
         columnas = [
             "player", "team", "position", "market", "line",
             "bookmaker", "odds", "prob_modelo", "prob_mercado_consenso",
-            "edge", "ev", "quality_score", "hit_rate", "trend",
+            "edge", "ev", "quality_score", "hit_rate", "games", "trend",
             "factor_rival", "n_casas_consenso", "dispersion_cv", "alerta_dispersion",
         ]
         columnas = [c for c in columnas if c in df.columns]
@@ -125,6 +125,7 @@ with st.expander("ℹ️ Cómo leer la tabla"):
 - **edge**: diferencia entre las dos anteriores. Cuanto más alto, más "valor" aparente.
 - **ev**: valor esperado en % si apostaras con la mejor cuota disponible.
 - **quality_score**: puntuación 0-100 que combina consistencia, probabilidad, EV y tendencia — pensada para no dejarte deslumbrar por un edge alto en una muestra poco fiable.
+- **hit_rate** / **games**: cuántas veces superó la línea de las últimas partidos "válidas" (excluyendo cameos de pocos minutos). Con `games` bajo (6-7) el hit_rate es menos fiable que con 9-10 — el `quality_score` ya lo penaliza, pero conviene mirarlo directamente si vas a apostar fuerte.
 - **factor_rival**: ajuste (±15% máx.) aplicado a la media del jugador según cómo de permeable es el rival en ese mercado (p. ej. un rival que concede muchos tiros sube ligeramente la probabilidad de "shots"). 1.00 = sin ajuste, no había suficiente dato del rival.
 - **n_casas_consenso** / **dispersion_cv**: cuántas casas coinciden en esa cuota y cuánto varían entre sí. Dispersión alta = las propias casas no tienen claro el número, así que el "edge" es menos fiable.
         """

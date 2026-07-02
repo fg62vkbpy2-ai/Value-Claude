@@ -194,7 +194,7 @@ def es_mercado_valido(summary: dict, linea: float, cuota: float, n_casas_consens
     if over is None:
         return False
 
-    if over["games"] < 5:
+    if over["games"] < 6:
         return False
 
     if cuota < 1.05 or cuota > 20:
