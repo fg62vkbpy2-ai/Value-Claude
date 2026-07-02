@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 from scraper import StatsHubClient
 from stats_engine import completar_jugador
+from team_context import construir_contexto_rival
 
 
 def generar_match_summary(evento: dict) -> dict:
@@ -61,11 +62,22 @@ def construir_partido(
     indice = client.construir_indice_mercados(mercados_local)
     indice.update(client.construir_indice_mercados(mercados_visitante))
 
+    log("🛡️ Descargando contexto de equipo (rival)...")
+    contexto_home = construir_contexto_rival(client, evento["homeTeamId"])
+    contexto_away = construir_contexto_rival(client, evento["awayTeamId"])
+
+    # El "rival" de un jugador del equipo local es el equipo visitante, y viceversa.
+    contexto_por_equipo = {
+        "homeTeam": contexto_away,
+        "awayTeam": contexto_home,
+    }
+
     log("📊 Completando jugadores (histórico + resumen)...")
     jugadores_final = []
     total = len(jugadores)
     for i, jugador in enumerate(jugadores, start=1):
         log(f"   [{i}/{total}] {jugador.get('name', 'Jugador')}")
+        jugador["rival_context"] = contexto_por_equipo.get(jugador.get("team"), {})
         jugador = completar_jugador(jugador, indice, client)
         jugadores_final.append(jugador)
 

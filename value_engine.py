@@ -24,6 +24,8 @@ import math
 from statistics import mean, pstdev
 from typing import List, Optional
 
+from team_context import factor_ajuste
+
 MIN_CASAS_CONSENSO = 3  # por debajo de esto, no hay consenso real de mercado
 MARGEN_ASUMIDO_BASE = 0.06
 DISPERSION_ALERTA = 0.35  # a partir de aquí, las casas no se ponen de acuerdo
@@ -51,13 +53,20 @@ def probabilidad_historica(summary: dict, linea: float) -> Optional[float]:
     return over["rate"]
 
 
-def estimar_probabilidad(summary: dict, linea: float) -> Optional[float]:
+def estimar_probabilidad(summary: dict, linea: float, factor_rival: float = 1.0) -> Optional[float]:
     """
     Combina la probabilidad de una distribución normal (60%) con el
     hit-rate histórico real (40%), y ajusta por tendencia y
     consistencia. Devuelve un porcentaje entre 1 y 99.
+
+    `factor_rival` (opcional, por defecto 1.0 = sin efecto) multiplica
+    la media histórica del jugador antes de calcular la parte normal,
+    para reflejar que el rival concreto es más o menos permeable de lo
+    habitual en ese mercado (ver team_context.py). El hit-rate
+    histórico (p_hist) NO se toca, porque ya es un dato observado real
+    y no tiene sentido "corregirlo" retroactivamente.
     """
-    media = summary["mean10"]
+    media = summary["mean10"] * factor_rival
     desviacion = summary["stdev"]
 
     p_normal = probabilidad_normal(media, desviacion, linea)
@@ -269,7 +278,13 @@ def calcular_quality_score(pick: dict) -> float:
 # Análisis de un mercado / jugador / partido completo
 # ----------------------------------------------------------------------
 
-def analizar_mercado(jugador: dict, mercado: str, apuesta: dict, summary: dict) -> Optional[dict]:
+def analizar_mercado(
+    jugador: dict,
+    mercado: str,
+    apuesta: dict,
+    summary: dict,
+    factor_rival: float = 1.0,
+) -> Optional[dict]:
     linea = apuesta["line"]
 
     mejor_cuota, bookmaker = obtener_mejor_cuota(apuesta)
@@ -284,7 +299,7 @@ def analizar_mercado(jugador: dict, mercado: str, apuesta: dict, summary: dict) 
     if consenso["prob_over_consenso"] is None:
         return None
 
-    prob_modelo = estimar_probabilidad(summary, linea)
+    prob_modelo = estimar_probabilidad(summary, linea, factor_rival=factor_rival)
     if prob_modelo is None:
         return None
 
@@ -327,6 +342,7 @@ def analizar_mercado(jugador: dict, mercado: str, apuesta: dict, summary: dict) 
         "mean5": summary["mean5"],
         "mean10": summary["mean10"],
         "n_partidos_validos": summary.get("n_partidos_validos", over["games"]),
+        "factor_rival": factor_rival,
     }
 
     pick["quality_score"] = calcular_quality_score(pick)
@@ -336,15 +352,18 @@ def analizar_mercado(jugador: dict, mercado: str, apuesta: dict, summary: dict) 
 def analizar_jugador(jugador: dict) -> List[dict]:
     resultados = []
     mercados = jugador.get("markets", {})
+    contexto_rival = jugador.get("rival_context", {})
 
     for mercado, apuestas in mercados.items():
         summary = jugador.get("summary", {}).get(mercado)
         if summary is None:
             continue
 
+        factor_rival = factor_ajuste(contexto_rival.get(mercado), mercado)
+
         for apuesta in apuestas:
             try:
-                resultado = analizar_mercado(jugador, mercado, apuesta, summary)
+                resultado = analizar_mercado(jugador, mercado, apuesta, summary, factor_rival=factor_rival)
                 if resultado is not None:
                     resultados.append(resultado)
             except Exception as e:
