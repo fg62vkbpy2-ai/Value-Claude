@@ -75,24 +75,53 @@ def calcular_promedio_equipo(historial: list, bloque: str, campo: str, n_partido
     return round(mean(valores), 2)
 
 
-def construir_contexto_rival(client, team_id: int) -> dict:
+def construir_contexto_rival(historial: list) -> dict:
     """
-    Construye el contexto de un equipo: promedio de cada mercado según
-    el mapeo de CAMPO_RIVAL, más el nº de partidos usados (para saber
-    cuánto fiarse del dato).
+    Construye el contexto de un equipo (ya descargado): promedio de cada
+    mercado según el mapeo de CAMPO_RIVAL, más el nº de partidos usados
+    (para saber cuánto fiarse del dato).
     """
-    try:
-        historial = obtener_historial_equipo(client, team_id)
-    except Exception as e:
-        print(f"⚠️ Error descargando contexto del equipo {team_id}: {e}")
-        historial = []
-
     contexto = {}
     for mercado, (bloque, campo) in CAMPO_RIVAL.items():
         contexto[mercado] = calcular_promedio_equipo(historial, bloque, campo)
 
     contexto["n_partidos"] = len(historial)
     return contexto
+
+
+# ----------------------------------------------------------------------
+# Resumen de equipo (contexto narrativo, no genera picks porque no hay
+# cuotas de equipo en StatsHub) - pensado para leer directamente o para
+# pasarle a un LLM como contexto verificado, en vez de que se lo invente.
+# ----------------------------------------------------------------------
+
+# etiqueta -> (bloque a favor, campo a favor, bloque en contra, campo en contra)
+CAMPOS_RESUMEN = {
+    "shots": ("statistics", "totalShotsOnGoal", "opponentStatistics", "totalShotsOnGoal"),
+    "shots_on_target": ("statistics", "shotsOnGoal", "opponentStatistics", "shotsOnGoal"),
+    "corners": ("statistics", "cornerKicks", "opponentStatistics", "cornerKicks"),
+    "fouls": ("statistics", "fouls", "opponentStatistics", "fouls"),
+    "tackles": ("statistics", "totalTackle", "opponentStatistics", "totalTackle"),
+    "saves_portero": ("statistics", "goalkeeperSaves", "opponentStatistics", "goalkeeperSaves"),
+}
+
+
+def construir_resumen_equipo(historial: list, nombre_equipo: str = "") -> dict:
+    """
+    Resumen "a favor" / "en contra" de un equipo en varios mercados,
+    calculado sobre los mismos partidos que usa el factor_rival (no
+    hace ninguna llamada nueva). Pensado como contexto de lectura, no
+    como pick — StatsHub no da cuotas de mercados de equipo.
+    """
+    resumen = {"equipo": nombre_equipo, "n_partidos": len(historial)}
+
+    for etiqueta, (bloque_favor, campo_favor, bloque_contra, campo_contra) in CAMPOS_RESUMEN.items():
+        resumen[etiqueta] = {
+            "a_favor": calcular_promedio_equipo(historial, bloque_favor, campo_favor),
+            "en_contra": calcular_promedio_equipo(historial, bloque_contra, campo_contra),
+        }
+
+    return resumen
 
 
 def factor_ajuste(valor_rival: Optional[float], mercado: str, tope: float = TOPE_AJUSTE) -> float:

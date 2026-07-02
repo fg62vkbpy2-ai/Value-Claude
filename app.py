@@ -75,6 +75,41 @@ if enviado:
     st.subheader(f"{resumen['home_team']} vs {resumen['away_team']}")
     st.caption(f"{resumen['date']} · event_id {resumen['event_id']}")
 
+    team_summary = partido.get("team_summary", {})
+    if team_summary:
+        with st.expander("📊 Contexto de equipo (a favor / en contra, últimos partidos)"):
+            st.caption(
+                "No hay cuotas de equipo en StatsHub, así que esto no genera picks — "
+                "es contexto verificado para leer tú mismo o pegárselo a un LLM en vez "
+                "de que se lo invente."
+            )
+            filas = []
+            etiquetas_bonitas = {
+                "shots": "Tiros",
+                "shots_on_target": "Tiros a puerta",
+                "corners": "Córners",
+                "fouls": "Faltas",
+                "tackles": "Entradas",
+                "saves_portero": "Paradas portero",
+            }
+            for lado, datos in [("home", team_summary.get("home", {})), ("away", team_summary.get("away", {}))]:
+                for clave, etiqueta in etiquetas_bonitas.items():
+                    valores = datos.get(clave, {})
+                    filas.append({
+                        "equipo": datos.get("equipo", lado),
+                        "métrica": etiqueta,
+                        "a favor (media)": valores.get("a_favor"),
+                        "en contra (media)": valores.get("en_contra"),
+                    })
+            df_equipos = pd.DataFrame(filas)
+            st.dataframe(df_equipos, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Basado en los últimos {team_summary.get('home', {}).get('n_partidos', '?')} "
+                f"partidos de {team_summary.get('home', {}).get('equipo', 'local')} y "
+                f"{team_summary.get('away', {}).get('n_partidos', '?')} de "
+                f"{team_summary.get('away', {}).get('equipo', 'visitante')}."
+            )
+
     picks = mejores_picks(partido, top=top_n, ordenar_por=orden, deduplicar=deduplicar)
 
     if not picks:
@@ -104,7 +139,7 @@ if enviado:
             height=600,
         )
 
-        informe = {"summary": resumen, "picks": picks}
+        informe = {"summary": resumen, "team_context": team_summary, "picks": picks}
         nombre_archivo = (
             f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}.json"
         ).replace(" ", "_")

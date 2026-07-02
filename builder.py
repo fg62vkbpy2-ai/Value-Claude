@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from scraper import StatsHubClient
 from stats_engine import completar_jugador
-from team_context import construir_contexto_rival
+from team_context import construir_contexto_rival, construir_resumen_equipo, obtener_historial_equipo
 
 
 def generar_match_summary(evento: dict) -> dict:
@@ -63,8 +63,22 @@ def construir_partido(
     indice.update(client.construir_indice_mercados(mercados_visitante))
 
     log("🛡️ Descargando contexto de equipo (rival)...")
-    contexto_home = construir_contexto_rival(client, evento["homeTeamId"])
-    contexto_away = construir_contexto_rival(client, evento["awayTeamId"])
+    try:
+        historial_home = obtener_historial_equipo(client, evento["homeTeamId"])
+    except Exception as e:
+        log(f"⚠️ Error descargando histórico del equipo local: {e}")
+        historial_home = []
+    try:
+        historial_away = obtener_historial_equipo(client, evento["awayTeamId"])
+    except Exception as e:
+        log(f"⚠️ Error descargando histórico del equipo visitante: {e}")
+        historial_away = []
+
+    contexto_home = construir_contexto_rival(historial_home)
+    contexto_away = construir_contexto_rival(historial_away)
+
+    resumen_equipo_home = construir_resumen_equipo(historial_home, evento["homeTeam"])
+    resumen_equipo_away = construir_resumen_equipo(historial_away, evento["awayTeam"])
 
     # El "rival" de un jugador del equipo local es el equipo visitante, y viceversa.
     contexto_por_equipo = {
@@ -89,4 +103,8 @@ def construir_partido(
         "summary": generar_match_summary(evento),
         "event": evento,
         "players": jugadores_final,
+        "team_summary": {
+            "home": resumen_equipo_home,
+            "away": resumen_equipo_away,
+        },
     }
