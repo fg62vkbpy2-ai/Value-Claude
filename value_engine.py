@@ -360,11 +360,43 @@ def analizar_partido(partido: dict) -> List[dict]:
     return picks
 
 
+def deduplicar_picks(picks: List[dict]) -> List[dict]:
+    """
+    Cuando un jugador tiene varias líneas del mismo mercado (p. ej.
+    tackles 0.5, 1.5, 2.5, 3.5...) esas apuestas están altamente
+    correlacionadas entre sí -> no son oportunidades independientes,
+    son casi la misma apuesta contada varias veces.
+
+    Nos quedamos solo con la mejor (mayor quality_score) por cada
+    combinación jugador+mercado, para que el ranking final muestre
+    variedad real en vez de que un solo jugador ocupe media tabla.
+    """
+    mejores = {}
+
+    for pick in picks:
+        clave = (pick.get("playerId"), pick.get("market"))
+        actual = mejores.get(clave)
+
+        if actual is None or pick.get("quality_score", 0) > actual.get("quality_score", 0):
+            mejores[clave] = pick
+
+    return list(mejores.values())
+
+
 def ordenar_picks(picks: List[dict], campo: str = "quality_score", descendente: bool = True) -> List[dict]:
     return sorted(picks, key=lambda x: x.get(campo, 0) or 0, reverse=descendente)
 
 
-def mejores_picks(partido: dict, top: int = 20, ordenar_por: str = "quality_score") -> List[dict]:
+def mejores_picks(
+    partido: dict,
+    top: int = 20,
+    ordenar_por: str = "quality_score",
+    deduplicar: bool = True,
+) -> List[dict]:
     picks = analizar_partido(partido)
+
+    if deduplicar:
+        picks = deduplicar_picks(picks)
+
     picks = ordenar_picks(picks, campo=ordenar_por)
     return picks[:top]

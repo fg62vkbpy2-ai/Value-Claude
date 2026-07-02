@@ -38,6 +38,16 @@ with st.form("analizar"):
             ["quality_score", "edge", "ev", "prob_modelo"],
             index=0,
         )
+    deduplicar = st.checkbox(
+        "Mostrar solo la mejor línea por jugador + mercado",
+        value=True,
+        help=(
+            "Si un jugador tiene varias líneas del mismo mercado "
+            "(p. ej. tackles 0.5, 1.5, 2.5...), son apuestas muy "
+            "correlacionadas entre sí. Con esta opción activada solo "
+            "se muestra la mejor de cada jugador+mercado."
+        ),
+    )
     enviado = st.form_submit_button("Analizar partido")
 
 if enviado:
@@ -65,7 +75,7 @@ if enviado:
     st.subheader(f"{resumen['home_team']} vs {resumen['away_team']}")
     st.caption(f"{resumen['date']} · event_id {resumen['event_id']}")
 
-    picks = mejores_picks(partido, top=top_n, ordenar_por=orden)
+    picks = mejores_picks(partido, top=top_n, ordenar_por=orden, deduplicar=deduplicar)
 
     if not picks:
         st.warning("No se encontraron picks con edge positivo para este partido.")
