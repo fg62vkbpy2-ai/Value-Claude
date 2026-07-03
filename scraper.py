@@ -4,8 +4,12 @@ Descarga los datos crudos de StatsHub para un partido:
 - Info del evento (equipos, fecha, ids)
 - Alineaciones probables
 - Cuotas por jugador (mercados: tiros, tiros a puerta, faltas, faltas
-  recibidas, entradas)
+  recibidas, entradas, goles, asistencias, xG, xA, pases, centros,
+  posesión perdida, desposesión, intercepciones, amarillas, fueras
+  de juego, paradas...)
 - Histórico de rendimiento de cada jugador
+- Stats de equipo (corners, tiros, faltas, entradas, paradas...) vía
+  /team/{id}/event-statistics
 
 Toda la lógica viene del notebook original de Colab, reorganizada en
 una clase reutilizable (StatsHubClient) en vez de funciones sueltas.
@@ -29,14 +33,41 @@ HEADERS = {
 TIMEOUT = 30
 
 # Mercados de jugador que se descargan. Añadir aquí una entrada nueva
-# es suficiente para que se descargue automáticamente (statType real
-# de StatsHub -> nombre interno que usamos nosotros).
+# es suficiente para que se descargue automáticamente (nombre interno
+# que usamos nosotros -> statType real de StatsHub).
 STAT_TYPES = {
     "shots": "shots",
     "shots_on_target": "onTargetScoringAttempt",
     "fouls": "fouls",
     "was_fouled": "wasFouled",
     "tackles": "totalTackle",
+    "goals": "goals",
+    "assists": "goalAssist",
+    "goal_or_assist": "scoredOrAssisted",
+    "xg": "expectedGoals",
+    "xa": "expectedAssists",
+    "xgxa": "xGxA",
+    "shots_created": "keyPass",
+    "foul_involvements": "foulInvolvements",
+    "passes": "totalPass",
+    "crosses": "totalCross",
+    "possession_lost": "possessionLostCtrl",
+    "dispossessed": "dispossessed",
+    "interceptions_won": "interceptionWon",
+    "yellow_cards": "yellowCard",
+    "offsides": "totalOffside",
+    "saves": "saves",
+}
+
+# Stats de EQUIPO (endpoint distinto: /team/{id}/event-statistics).
+# Nombre interno -> statisticKey real de StatsHub.
+TEAM_STAT_KEYS = {
+    "corners": "cornerKicks",
+    "shots_on_target": "totalShotsOnGoal",
+    "shots_off_target": "shotsOffGoal",
+    "fouls": "fouls",
+    "tackles": "totalTackle",
+    "saves_portero": "goalkeeperSaves",
 }
 
 
@@ -173,10 +204,36 @@ class StatsHubClient:
         return indice
 
     # ------------------------------------------------------------------
-    # Rendimiento histórico
+    # Rendimiento histórico (jugador)
     # ------------------------------------------------------------------
 
     def obtener_performance(self, player_id: int) -> List[dict]:
         url = f"https://www.statshub.com/api/player/{player_id}/performance"
+        data = self.get_json(url)
+        return data.get("data", [])
+
+    # ------------------------------------------------------------------
+    # Stats de EQUIPO (endpoint distinto, una llamada por statisticKey)
+    # ------------------------------------------------------------------
+
+    def obtener_stat_equipo(
+        self,
+        team_id: int,
+        statistic_key: str,
+        tournament_ids: str,
+        limit: int = 20,
+    ) -> List[dict]:
+        """
+        Devuelve una fila por partido: home_team_id, away_team_id,
+        home_value, away_value, event_id, etc. Para saber si el valor
+        es "a favor" o "en contra" del equipo que nos interesa, hay
+        que comparar team_id contra home_team_id/away_team_id de cada
+        fila (esto se hace en team_context.py).
+        """
+        url = (
+            f"https://www.statshub.com/api/team/{team_id}/event-statistics"
+            f"?eventType=all&statisticKey={statistic_key}&eventHalf=ALL"
+            f"&tournamentIds={tournament_ids}&limit={limit}"
+        )
         data = self.get_json(url)
         return data.get("data", [])

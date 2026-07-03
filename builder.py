@@ -1,7 +1,8 @@
 """
 builder.py
 Orquesta la descarga completa de un partido: evento, alineaciones,
-mercados (cuotas) y rendimiento histórico + resumen de cada jugador.
+mercados (cuotas) y rendimiento histórico + resumen de cada jugador,
+más el contexto de equipo (rival) usado para ajustar las probabilidades.
 """
 
 import time
@@ -9,7 +10,7 @@ from typing import Callable, Optional
 
 from scraper import StatsHubClient
 from stats_engine import completar_jugador
-from team_context import construir_contexto_rival, construir_resumen_equipo, obtener_historial_equipo
+from team_context import construir_resumen_equipo
 
 
 def generar_match_summary(evento: dict) -> dict:
@@ -64,26 +65,28 @@ def construir_partido(
 
     log("🛡️ Descargando contexto de equipo (rival)...")
     try:
-        historial_home = obtener_historial_equipo(client, evento["homeTeamId"])
+        resumen_equipo_home = construir_resumen_equipo(client, evento["homeTeamId"], evento["homeTeam"])
     except Exception as e:
-        log(f"⚠️ Error descargando histórico del equipo local: {e}")
-        historial_home = []
+        log(f"⚠️ Error descargando contexto del equipo local: {e}")
+        resumen_equipo_home = {}
     try:
-        historial_away = obtener_historial_equipo(client, evento["awayTeamId"])
+        resumen_equipo_away = construir_resumen_equipo(client, evento["awayTeamId"], evento["awayTeam"])
     except Exception as e:
-        log(f"⚠️ Error descargando histórico del equipo visitante: {e}")
-        historial_away = []
-
-    contexto_home = construir_contexto_rival(historial_home)
-    contexto_away = construir_contexto_rival(historial_away)
-
-    resumen_equipo_home = construir_resumen_equipo(historial_home, evento["homeTeam"])
-    resumen_equipo_away = construir_resumen_equipo(historial_away, evento["awayTeam"])
+        log(f"⚠️ Error descargando contexto del equipo visitante: {e}")
+        resumen_equipo_away = {}
 
     # El "rival" de un jugador del equipo local es el equipo visitante, y viceversa.
     contexto_por_equipo = {
-        "homeTeam": contexto_away,
-        "awayTeam": contexto_home,
+        "homeTeam": resumen_equipo_away,
+        "awayTeam": resumen_equipo_home,
+    }
+
+    # Traduce team ("homeTeam"/"awayTeam") al nombre real del equipo,
+    # para que el informe final (y lo que se le pase a la IA) diga
+    # "Switzerland"/"Algeria" en vez del literal interno.
+    nombre_equipo_por_lado = {
+        "homeTeam": evento["homeTeam"],
+        "awayTeam": evento["awayTeam"],
     }
 
     log("📊 Completando jugadores (histórico + resumen)...")
@@ -91,7 +94,9 @@ def construir_partido(
     total = len(jugadores)
     for i, jugador in enumerate(jugadores, start=1):
         log(f"   [{i}/{total}] {jugador.get('name', 'Jugador')}")
-        jugador["rival_context"] = contexto_por_equipo.get(jugador.get("team"), {})
+        lado = jugador.get("team")
+        jugador["rival_context"] = contexto_por_equipo.get(lado, {})
+        jugador["team"] = nombre_equipo_por_lado.get(lado, lado)
         jugador = completar_jugador(jugador, indice, client)
         jugadores_final.append(jugador)
 
@@ -99,7 +104,7 @@ def construir_partido(
     log(f"✅ Partido construido en {tiempo}s")
 
     return {
-        "version": "2.1",
+        "version": "2.2",
         "summary": generar_match_summary(evento),
         "event": evento,
         "players": jugadores_final,

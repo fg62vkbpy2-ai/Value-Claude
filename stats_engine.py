@@ -11,6 +11,20 @@ MEJORA respecto a la v1 del notebook original:
   contaba exactamente igual que un partido completo, lo que
   distorsionaba la media y hacía parecer "poco fiables" a jugadores
   que en realidad sí lo eran cuando jugaban de titular.
+
+MERCADOS NUEVOS (ronda de ampliación):
+Se añadieron goles, asistencias, gol o asistencia, xG, xA, xG+xA,
+tiros creados, participación en faltas, pases, centros, posesión
+perdida, desposesión, intercepciones ganadas, amarillas, fueras de
+juego y paradas. El campo de origen de cada uno viene de la misma
+"player_statistics_event" que ya se usaba, así que no hace falta
+tocar extraer_serie ni calcular_summary_serie: solo el mapeo.
+
+PENDIENTE (no se toca en esta ronda): mercados discretos y con pocos
+eventos por partido (goals, assists, yellow_cards...) no encajan bien
+con el modelo de distribución normal que usa value_engine.py para la
+parte "prob_normal". Habría que revisar ese punto antes de fiarse
+demasiado de esos picks.
 """
 
 from statistics import mean, pstdev
@@ -22,6 +36,22 @@ MAPA_CAMPOS = {
     "fouls": "fouls",
     "was_fouled": "wasFouled",
     "tackles": "totalTackle",
+    "goals": "goals",
+    "assists": "goalAssist",
+    "goal_or_assist": "scoredOrAssisted",
+    "xg": "expectedGoals",
+    "xa": "expectedAssists",
+    "xgxa": "xGxA",
+    "shots_created": "keyPass",
+    "foul_involvements": "foulInvolvements",
+    "passes": "totalPass",
+    "crosses": "totalCross",
+    "possession_lost": "possessionLostCtrl",
+    "dispossessed": "dispossessed",
+    "interceptions_won": "interceptionWon",
+    "yellow_cards": "yellowCard",
+    "offsides": "totalOffside",
+    "saves": "saves",
 }
 
 CAMPO_MINUTOS = "minutesPlayed"

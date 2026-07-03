@@ -1,137 +1,195 @@
 """
 team_context.py
-Contexto de equipo rival: usa el histórico del equipo (/team/{id}/performance,
-mismo patrón que el histórico de jugador) para saber si un rival concreto
-es más o menos "permeable" de lo normal en cada mercado, y ajustar la
-probabilidad del jugador en consecuencia.
+Contexto de equipo rival, usando el endpoint REAL de StatsHub:
 
-Cada partido del histórico de un equipo trae dos bloques:
-- statistics: lo que hizo ESE equipo (fouls cometidas, tiros generados...)
-- opponentStatistics: lo que le hizo SU RIVAL en ese partido (tiros que
-  encajó, faltas que le sacaron...)
+  /api/team/{id}/event-statistics?eventType=all&statisticKey=XXXX
+      &eventHalf=ALL&tournamentIds=...&limit=20
 
-MAPEO usado para cada mercado de jugador (el rival aquí es el equipo
-CONTRARIO al del jugador que estamos analizando):
+Cada llamada devuelve una fila por partido con esta forma (verificado
+contra la API real, no es una suposición):
 
-- shots            -> tiros que el rival concede    (opponentStatistics.totalShotsOnGoal)
-- shots_on_target   -> tiros a puerta que concede el rival (opponentStatistics.shotsOnGoal)
-- fouls (comete)    -> faltas que el rival provoca en sus oponentes (opponentStatistics.fouls)
-- was_fouled        -> faltas que comete el rival habitualmente (statistics.fouls)
-- tackles           -> volumen ofensivo del rival, proxy de cuánto hay que
-                        defender contra él (statistics.totalShotsOnGoal)
+  {
+    "event_id": ...,
+    "home_team_id": ...,
+    "away_team_id": ...,
+    "home_value": "...",
+    "away_value": "...",
+    ...
+  }
+
+NO es el formato "statistics"/"opponentStatistics" que asumía la v1 de
+este archivo (ese formato no existe en la API real; era un error de
+diseño basado en una suposición no verificada). Para saber si un valor
+es "a favor" o "en contra" del equipo que nos interesa, comparamos
+team_id contra home_team_id/away_team_id de cada fila.
+
+Como no hay un statisticKey de "tiros totales" directo, se calcula
+como shots_on_target + shots_off_target, cruzando ambas listas por
+event_id (misma muestra de partidos).
 
 IMPORTANTE - qué es dato real y qué es aproximación:
-- Los promedios por equipo (valor_rival) SÍ son datos reales de StatsHub.
-- REFERENCIA_LIGA son valores típicos de fútbol de selecciones que uso
-  como "ancla" para saber si el rival está por encima o por debajo de lo
-  normal, porque StatsHub no nos da fácilmente la media de toda la
-  competición. Por eso el ajuste final está siempre acotado a un máximo
-  de ±TOPE_AJUSTE: el contexto de equipo puede matizar la probabilidad
-  del jugador, pero nunca puede dominar sobre su propio histórico real.
+- Los promedios por equipo (a_favor / en_contra) SÍ son datos reales
+  de StatsHub, calculados sobre los últimos partidos configurados.
+- REFERENCIA_LIGA son valores típicos de fútbol de selecciones que se
+  usan como "ancla" para saber si el rival está por encima o por
+  debajo de lo normal, porque StatsHub no da fácilmente la media de
+  toda la competición. Por eso el ajuste final está siempre acotado a
+  un máximo de ±TOPE_AJUSTE: el contexto de equipo puede matizar la
+  probabilidad del jugador, pero nunca puede dominar sobre su propio
+  histórico real.
+
+PENDIENTE (no se toca en esta ronda):
+- tournament_ids está fijo por defecto (ver TOURNAMENT_IDS_DEFAULT).
+  Es específico de qué competiciones ha jugado el equipo recientemente
+  y debería idealmente derivarse del propio equipo en vez de venir
+  hardcodeado.
+- CAMPO_RIVAL / REFERENCIA_LIGA solo cubren los 5 mercados originales
+  (shots, shots_on_target, fouls, was_fouled, tackles). Los mercados
+  nuevos (goles, xG, tarjetas...) no tienen todavía un stat de equipo
+  equivalente asignado, así que su factor_ajuste será 1.0 (sin ajuste)
+  hasta que se decida qué corresponde a cada uno.
+- 12 llamadas HTTP nuevas por partido (6 statisticKeys x 2 equipos).
+  Si construir_partido tarda demasiado, esto es lo primero a
+  paralelizar.
 """
 
 from statistics import mean
 from typing import Optional
 
-REFERENCIA_LIGA = {
-    "shots": 12.0,            # tiros totales que concede un equipo medio
-    "shots_on_target": 4.5,   # tiros a puerta que concede un equipo medio
-    "fouls": 12.0,            # faltas que provoca / comete un equipo medio
-    "was_fouled": 12.0,
-    "tackles": 12.0,          # proxy: tiros generados por el rival
-}
+from scraper import StatsHubClient, TEAM_STAT_KEYS
+
+TOURNAMENT_IDS_DEFAULT = "16,246,308,851"  # ver nota: específico del equipo, revisar
 
 TOPE_AJUSTE = 0.15  # el contexto de equipo nunca mueve la probabilidad más de un ±15%
 
+# mercado de jugador -> (statisticKey de equipo, "a_favor" o "en_contra")
 CAMPO_RIVAL = {
-    # mercado -> (bloque, campo) dentro de cada partido del histórico del rival
-    "shots": ("opponentStatistics", "totalShotsOnGoal"),
-    "shots_on_target": ("opponentStatistics", "shotsOnGoal"),
-    "fouls": ("opponentStatistics", "fouls"),
-    "was_fouled": ("statistics", "fouls"),
-    "tackles": ("statistics", "totalShotsOnGoal"),
+    "shots": ("shots_total", "en_contra"),
+    "shots_on_target": ("shots_on_target", "en_contra"),
+    "fouls": ("fouls", "en_contra"),
+    "was_fouled": ("fouls", "a_favor"),
+    "tackles": ("shots_on_target", "a_favor"),
+}
+
+REFERENCIA_LIGA = {
+    "shots_total": 12.0,
+    "shots_on_target": 4.5,
+    "fouls": 12.0,
 }
 
 
-def obtener_historial_equipo(client, team_id: int) -> list:
-    """Descarga el histórico de partidos de un equipo."""
-    url = f"https://www.statshub.com/api/team/{team_id}/performance"
-    data = client.get_json(url)
-    return data.get("data", [])
-
-
-def calcular_promedio_equipo(historial: list, bloque: str, campo: str, n_partidos: int = 10) -> Optional[float]:
-    """Media de un campo concreto (statistics/opponentStatistics) en los últimos N partidos."""
-    valores = []
-    for partido in historial[:n_partidos]:
-        valor = partido.get(bloque, {}).get(campo)
-        if valor is not None:
-            try:
-                valores.append(float(valor))
-            except (TypeError, ValueError):
-                continue
-    if not valores:
-        return None
-    return round(mean(valores), 2)
-
-
-def construir_contexto_rival(historial: list) -> dict:
-    """
-    Construye el contexto de un equipo (ya descargado): promedio de cada
-    mercado según el mapeo de CAMPO_RIVAL, más el nº de partidos usados
-    (para saber cuánto fiarse del dato).
-    """
-    contexto = {}
-    for mercado, (bloque, campo) in CAMPO_RIVAL.items():
-        contexto[mercado] = calcular_promedio_equipo(historial, bloque, campo)
-
-    contexto["n_partidos"] = len(historial)
-    return contexto
-
-
 # ----------------------------------------------------------------------
-# Resumen de equipo (contexto narrativo, no genera picks porque no hay
-# cuotas de equipo en StatsHub) - pensado para leer directamente o para
-# pasarle a un LLM como contexto verificado, en vez de que se lo invente.
+# Descarga y resumen por equipo
 # ----------------------------------------------------------------------
 
-# etiqueta -> (bloque a favor, campo a favor, bloque en contra, campo en contra)
-CAMPOS_RESUMEN = {
-    "shots": ("statistics", "totalShotsOnGoal", "opponentStatistics", "totalShotsOnGoal"),
-    "shots_on_target": ("statistics", "shotsOnGoal", "opponentStatistics", "shotsOnGoal"),
-    "corners": ("statistics", "cornerKicks", "opponentStatistics", "cornerKicks"),
-    "fouls": ("statistics", "fouls", "opponentStatistics", "fouls"),
-    "tackles": ("statistics", "totalTackle", "opponentStatistics", "totalTackle"),
-    "saves_portero": ("statistics", "goalkeeperSaves", "opponentStatistics", "goalkeeperSaves"),
-}
-
-
-def construir_resumen_equipo(historial: list, nombre_equipo: str = "") -> dict:
+def _dividir_favor_contra(filas: list, team_id: int) -> dict:
     """
-    Resumen "a favor" / "en contra" de un equipo en varios mercados,
-    calculado sobre los mismos partidos que usa el factor_rival (no
-    hace ninguna llamada nueva). Pensado como contexto de lectura, no
-    como pick — StatsHub no da cuotas de mercados de equipo.
+    Separa una lista de filas del endpoint event-statistics en valores
+    "a favor" y "en contra" del team_id dado, según si aparecía como
+    home o away en cada partido.
     """
-    resumen = {"equipo": nombre_equipo, "n_partidos": len(historial)}
+    a_favor, en_contra = [], []
+    for fila in filas:
+        home_id = fila.get("home_team_id")
+        away_id = fila.get("away_team_id")
+        home_val = fila.get("home_value")
+        away_val = fila.get("away_value")
 
-    for etiqueta, (bloque_favor, campo_favor, bloque_contra, campo_contra) in CAMPOS_RESUMEN.items():
-        resumen[etiqueta] = {
-            "a_favor": calcular_promedio_equipo(historial, bloque_favor, campo_favor),
-            "en_contra": calcular_promedio_equipo(historial, bloque_contra, campo_contra),
-        }
+        if home_val is None or away_val is None:
+            continue
+
+        try:
+            home_val, away_val = float(home_val), float(away_val)
+        except (TypeError, ValueError):
+            continue
+
+        if team_id == home_id:
+            a_favor.append(home_val)
+            en_contra.append(away_val)
+        elif team_id == away_id:
+            a_favor.append(away_val)
+            en_contra.append(home_val)
+
+    return {
+        "a_favor": round(mean(a_favor), 2) if a_favor else None,
+        "en_contra": round(mean(en_contra), 2) if en_contra else None,
+        "n_partidos": len(a_favor) or len(en_contra),
+    }
+
+
+def construir_resumen_equipo(
+    client: StatsHubClient,
+    team_id: int,
+    nombre_equipo: str = "",
+    tournament_ids: str = TOURNAMENT_IDS_DEFAULT,
+    limit: int = 20,
+) -> dict:
+    """
+    Descarga y resume todas las stats de equipo (una llamada HTTP por
+    statisticKey) y calcula además 'shots_total' como la suma de
+    shots_on_target + shots_off_target, partido a partido (cruzando
+    por event_id para no mezclar muestras distintas).
+
+    Nunca lanza excepción por un statisticKey aislado que falle: ese
+    campo queda como {a_favor: None, en_contra: None, n_partidos: 0}.
+    """
+    resumen = {"equipo": nombre_equipo}
+    crudos = {}
+
+    for etiqueta, stat_key in TEAM_STAT_KEYS.items():
+        try:
+            filas = client.obtener_stat_equipo(team_id, stat_key, tournament_ids, limit)
+        except Exception as e:
+            print(f"⚠️ {nombre_equipo} - {etiqueta}: {e}")
+            filas = []
+        crudos[etiqueta] = filas
+        resumen[etiqueta] = _dividir_favor_contra(filas, team_id)
+
+    # shots_total = on_target + off_target, cruzado por event_id.
+    on_target_rows = crudos.get("shots_on_target", [])
+    off_target_rows = crudos.get("shots_off_target", [])
+    off_por_evento = {f.get("event_id"): f for f in off_target_rows}
+
+    filas_total = []
+    for fila_on in on_target_rows:
+        fila_off = off_por_evento.get(fila_on.get("event_id"))
+        if fila_off is None:
+            continue
+        try:
+            filas_total.append({
+                "home_team_id": fila_on["home_team_id"],
+                "away_team_id": fila_on["away_team_id"],
+                "home_value": float(fila_on["home_value"]) + float(fila_off["home_value"]),
+                "away_value": float(fila_on["away_value"]) + float(fila_off["away_value"]),
+            })
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    resumen["shots_total"] = _dividir_favor_contra(filas_total, team_id)
+    resumen["n_partidos"] = resumen["shots_on_target"]["n_partidos"]
 
     return resumen
 
 
-def factor_ajuste(valor_rival: Optional[float], mercado: str, tope: float = TOPE_AJUSTE) -> float:
+# ----------------------------------------------------------------------
+# Factor de ajuste para el modelo del jugador
+# ----------------------------------------------------------------------
+
+def factor_ajuste(resumen_rival: dict, mercado: str, tope: float = TOPE_AJUSTE) -> float:
     """
-    Convierte el valor medio del rival en un factor multiplicador acotado
-    entre (1 - tope) y (1 + tope). Si no hay dato del rival o no hay
-    referencia para ese mercado, devuelve 1.0 (sin ajuste) en vez de
-    inventar un número.
+    Convierte el resumen de equipo del rival en un factor multiplicador
+    acotado entre (1 - tope) y (1 + tope). Si no hay dato del rival, no
+    hay referencia para ese mercado, o el mercado aún no tiene un stat
+    de equipo asignado en CAMPO_RIVAL, devuelve 1.0 (sin ajuste) en vez
+    de inventar un número.
     """
-    referencia = REFERENCIA_LIGA.get(mercado)
+    if not resumen_rival or mercado not in CAMPO_RIVAL:
+        return 1.0
+
+    stat_key, lado = CAMPO_RIVAL[mercado]
+    referencia = REFERENCIA_LIGA.get(stat_key)
+    valor_rival = resumen_rival.get(stat_key, {}).get(lado)
+
     if valor_rival is None or not referencia:
         return 1.0
 
