@@ -17,15 +17,9 @@ contra la API real, no es una suposición):
     ...
   }
 
-NO es el formato "statistics"/"opponentStatistics" que asumía la v1 de
-este archivo (ese formato no existe en la API real; era un error de
-diseño basado en una suposición no verificada). Para saber si un valor
-es "a favor" o "en contra" del equipo que nos interesa, comparamos
-team_id contra home_team_id/away_team_id de cada fila.
-
-Como no hay un statisticKey de "tiros totales" directo, se calcula
-como shots_on_target + shots_off_target, cruzando ambas listas por
-event_id (misma muestra de partidos).
+Para saber si un valor es "a favor" o "en contra" del equipo que nos
+interesa, comparamos team_id contra home_team_id/away_team_id de cada
+fila.
 
 IMPORTANTE - qué es dato real y qué es aproximación:
 - Los promedios por equipo (a_favor / en_contra) SÍ son datos reales
@@ -38,19 +32,42 @@ IMPORTANTE - qué es dato real y qué es aproximación:
   probabilidad del jugador, pero nunca puede dominar sobre su propio
   histórico real.
 
+FIX (esta ronda) - doble conteo en shots_total:
+La versión anterior calculaba "shots_total" sumando manualmente
+totalShotsOnGoal + shotsOffGoal, cruzando dos listas por event_id.
+Verificado contra la API real (y contra las gráficas de la propia
+StatsHub): "totalShotsOnGoal" YA ES el total de tiros (a puerta +
+fuera + bloqueados) pese a su nombre engañoso -> sumarle shotsOffGoal
+aparte contaba los tiros fuera dos veces. Ejemplo real: Australia daba
+12.05 de "tiros totales" con el cálculo viejo, cuando el dato real
+(confirmado en la app de StatsHub) es 7.6.
+
+Ahora "shots_total" se descarga directo desde TEAM_STAT_KEYS igual que
+el resto de campos, sin ningún cálculo manual. Y "shots_on_target" ya
+no apunta a "totalShotsOnGoal" (que no es "a puerta", es el total),
+sino a "shotsOnGoal" (el campo real de tiros a puerta, también
+confirmado contra la API: 2.9 de media para Australia, coincide con
+la pestaña "SOT" de StatsHub).
+
+Se ha eliminado por tanto todo el cruce por event_id (crudos,
+off_por_evento, filas_total) que existía en la versión anterior — ya
+no hace falta, y además ahorra 1 llamada HTTP por equipo (ya no se
+pide "shots_off_target" aparte).
+
 PENDIENTE (no se toca en esta ronda):
 - tournament_ids está fijo por defecto (ver TOURNAMENT_IDS_DEFAULT).
   Es específico de qué competiciones ha jugado el equipo recientemente
   y debería idealmente derivarse del propio equipo en vez de venir
-  hardcodeado.
+  hardcodeado. Esto fue precisamente lo que hizo que el primer
+  diagnóstico con Australia diera "sin datos" en todos los campos: no
+  era el team_id (ese estaba mal por otro motivo, ver historial), pero
+  sigue siendo un punto frágil si un equipo juega competiciones fuera
+  de esta lista fija.
 - CAMPO_RIVAL / REFERENCIA_LIGA solo cubren los 5 mercados originales
   (shots, shots_on_target, fouls, was_fouled, tackles). Los mercados
   nuevos (goles, xG, tarjetas...) no tienen todavía un stat de equipo
   equivalente asignado, así que su factor_ajuste será 1.0 (sin ajuste)
   hasta que se decida qué corresponde a cada uno.
-- 12 llamadas HTTP nuevas por partido (6 statisticKeys x 2 equipos).
-  Si construir_partido tarda demasiado, esto es lo primero a
-  paralelizar.
 """
 
 from statistics import mean
@@ -126,15 +143,14 @@ def construir_resumen_equipo(
 ) -> dict:
     """
     Descarga y resume todas las stats de equipo (una llamada HTTP por
-    statisticKey) y calcula además 'shots_total' como la suma de
-    shots_on_target + shots_off_target, partido a partido (cruzando
-    por event_id para no mezclar muestras distintas).
+    statisticKey, incluido shots_total directamente -- ya no hace
+    falta calcularlo a mano cruzando dos listas, ver nota del FIX
+    arriba).
 
     Nunca lanza excepción por un statisticKey aislado que falle: ese
     campo queda como {a_favor: None, en_contra: None, n_partidos: 0}.
     """
     resumen = {"equipo": nombre_equipo}
-    crudos = {}
 
     for etiqueta, stat_key in TEAM_STAT_KEYS.items():
         try:
@@ -142,31 +158,9 @@ def construir_resumen_equipo(
         except Exception as e:
             print(f"⚠️ {nombre_equipo} - {etiqueta}: {e}")
             filas = []
-        crudos[etiqueta] = filas
         resumen[etiqueta] = _dividir_favor_contra(filas, team_id)
 
-    # shots_total = on_target + off_target, cruzado por event_id.
-    on_target_rows = crudos.get("shots_on_target", [])
-    off_target_rows = crudos.get("shots_off_target", [])
-    off_por_evento = {f.get("event_id"): f for f in off_target_rows}
-
-    filas_total = []
-    for fila_on in on_target_rows:
-        fila_off = off_por_evento.get(fila_on.get("event_id"))
-        if fila_off is None:
-            continue
-        try:
-            filas_total.append({
-                "home_team_id": fila_on["home_team_id"],
-                "away_team_id": fila_on["away_team_id"],
-                "home_value": float(fila_on["home_value"]) + float(fila_off["home_value"]),
-                "away_value": float(fila_on["away_value"]) + float(fila_off["away_value"]),
-            })
-        except (TypeError, ValueError, KeyError):
-            continue
-
-    resumen["shots_total"] = _dividir_favor_contra(filas_total, team_id)
-    resumen["n_partidos"] = resumen["shots_on_target"]["n_partidos"]
+    resumen["n_partidos"] = resumen.get("shots_total", {}).get("n_partidos", 0)
 
     return resumen
 
