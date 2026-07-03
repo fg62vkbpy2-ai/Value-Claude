@@ -18,7 +18,7 @@ una clase reutilizable (StatsHubClient) en vez de funciones sueltas.
 import json
 import re
 from datetime import datetime, UTC
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -91,9 +91,9 @@ class StatsHubClient:
             response.raise_for_status()
             return response
         except requests.exceptions.HTTPError as e:
-            raise Exception(f"HTTP {response.status_code}\n{url}") from e
+            raise Exception(f"HTTP {response.status_code}") from e
         except requests.exceptions.RequestException as e:
-            raise Exception(f"No se pudo conectar con StatsHub.\n{e}") from e
+            raise Exception(f"No se pudo conectar: {e}") from e
 
     def get_html(self, url: str) -> str:
         return self._get(url).text
@@ -179,17 +179,37 @@ class StatsHubClient:
         )
         return self.get_json(url)["data"]
 
-    def obtener_todos_los_mercados(self, event_id: int, team_id: int) -> dict:
+    def obtener_todos_los_mercados(
+        self,
+        event_id: int,
+        team_id: int,
+        log: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        """
+        Descarga todos los mercados de STAT_TYPES para un equipo.
+
+        `log`, si se pasa, recibe una línea por mercado indicando:
+        - ✅ n jugadores con cuotas -> todo bien
+        - ○ sin mercado ofertado    -> respuesta OK pero vacía (StatsHub
+          no tiene ese mercado para este partido; no es un error nuestro)
+        - ❌ error real (HTTP, timeout, JSON inválido...) -> esto sí
+          hay que investigarlo (rate-limit, statType mal escrito, etc.)
+        """
         mercados = {}
         for nombre, stat in STAT_TYPES.items():
-            if self.debug:
-                print(f"Descargando {nombre}...")
             try:
-                mercados[nombre] = self.obtener_mercado(event_id, team_id, stat)
+                datos = self.obtener_mercado(event_id, team_id, stat)
+                mercados[nombre] = datos
+                n_jugadores = len(datos.get("playerOddsMap", {}))
+                if log:
+                    if n_jugadores > 0:
+                        log(f"      ✅ {nombre}: {n_jugadores} jugadores")
+                    else:
+                        log(f"      ○ {nombre}: sin mercado ofertado (vacío)")
             except Exception as e:
-                if self.debug:
-                    print(f"❌ Error en {nombre}: {e}")
                 mercados[nombre] = {}
+                if log:
+                    log(f"      ❌ {nombre}: {e}")
         return mercados
 
     @staticmethod
