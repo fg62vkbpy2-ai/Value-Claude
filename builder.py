@@ -60,12 +60,13 @@ def construir_partido(
     mercados_local = client.obtener_todos_los_mercados(evento["eventId"], evento["homeTeamId"])
     mercados_visitante = client.obtener_todos_los_mercados(evento["eventId"], evento["awayTeamId"])
 
-    indice = client.construir_indice_mercados(mercados_local)
-    
-    indice.update(client.construir_indice_mercados(mercados_visitante))
-mercados_ok = sum(1 for m in {**mercados_local, **mercados_visitante}.values() if m.get("playerOddsMap"))
+    todos_los_mercados = {**mercados_local, **mercados_visitante}
+    mercados_ok = sum(1 for m in todos_los_mercados.values() if m.get("playerOddsMap"))
     mercados_total = len(mercados_local) + len(mercados_visitante)
     log(f"📊 Mercados con datos: {mercados_ok}/{mercados_total}")
+
+    indice = client.construir_indice_mercados(mercados_local)
+    indice.update(client.construir_indice_mercados(mercados_visitante))
 
     log("🛡️ Descargando contexto de equipo (rival)...")
     try:
