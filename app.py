@@ -69,6 +69,8 @@ if enviado:
             st.error(f"Error al analizar el partido: {e}")
             st.stop()
 
+    progreso_box.empty()
+
     with st.expander("🔍 Log de descarga (para diagnóstico)"):
         st.code("\n".join(log_lines))
 
@@ -86,7 +88,7 @@ if enviado:
             )
             filas = []
             etiquetas_bonitas = {
-                "shots": "Tiros",
+                "shots_total": "Tiros",
                 "shots_on_target": "Tiros a puerta",
                 "corners": "Córners",
                 "fouls": "Faltas",
