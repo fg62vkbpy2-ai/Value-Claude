@@ -56,9 +56,14 @@ def construir_partido(
     jugadores = client.extraer_jugadores_probables(alineaciones)
     log(f"👥 {len(jugadores)} jugadores encontrados")
 
-    log("🎯 Descargando mercados...")
-    mercados_local = client.obtener_todos_los_mercados(evento["eventId"], evento["homeTeamId"])
-    mercados_visitante = client.obtener_todos_los_mercados(evento["eventId"], evento["awayTeamId"])
+    log(f"🎯 Descargando mercados de {evento['homeTeam']} (local)...")
+    mercados_local = client.obtener_todos_los_mercados(
+        evento["eventId"], evento["homeTeamId"], log=log
+    )
+    log(f"🎯 Descargando mercados de {evento['awayTeam']} (visitante)...")
+    mercados_visitante = client.obtener_todos_los_mercados(
+        evento["eventId"], evento["awayTeamId"], log=log
+    )
 
     todos_los_mercados = {**mercados_local, **mercados_visitante}
     mercados_ok = sum(1 for m in todos_los_mercados.values() if m.get("playerOddsMap"))
@@ -109,7 +114,7 @@ def construir_partido(
     log(f"✅ Partido construido en {tiempo}s")
 
     return {
-        "version": "2.2",
+        "version": "2.3",
         "summary": generar_match_summary(evento),
         "event": evento,
         "players": jugadores_final,
