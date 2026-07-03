@@ -20,6 +20,14 @@ juego y paradas. El campo de origen de cada uno viene de la misma
 "player_statistics_event" que ya se usaba, así que no hace falta
 tocar extraer_serie ni calcular_summary_serie: solo el mapeo.
 
+DIAGNÓSTICO (esta ronda):
+Los errores de completar_performance/completar_jugador se enrutaban
+solo con print(), que en Streamlit Cloud va a los logs del servidor,
+no a la interfaz. Si algo falla (rate-limit, timeout...) el usuario
+nunca lo veía, solo notaba que player_context/picks salían vacíos sin
+explicación. Ahora, si se pasa un callback `log`, los errores van ahí
+también (además de seguir imprimiéndose si debug=True en el cliente).
+
 PENDIENTE (no se toca en esta ronda): mercados discretos y con pocos
 eventos por partido (goals, assists, yellow_cards...) no encajan bien
 con el modelo de distribución normal que usa value_engine.py para la
@@ -28,7 +36,7 @@ demasiado de esos picks.
 """
 
 from statistics import mean, pstdev
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 MAPA_CAMPOS = {
     "shots": "shots",
@@ -172,20 +180,36 @@ def generar_summary_jugador(jugador: dict) -> dict:
     return summary
 
 
-def completar_performance(jugador: dict, client) -> dict:
+def completar_performance(
+    jugador: dict,
+    client,
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
     """
     Añade el histórico de partidos al jugador usando el StatsHubClient.
     Nunca lanza excepción; si falla, deja una lista vacía.
+
+    Si se pasa `log`, el error también se envía ahí (visible en la UI),
+    no solo por print() (que en Streamlit Cloud va a los logs del
+    servidor, invisibles para el usuario).
     """
     try:
         jugador["performance"] = client.obtener_performance(jugador["playerId"])
     except Exception as e:
-        print(f"⚠️ Error descargando performance de {jugador.get('name', 'Jugador')}: {e}")
+        mensaje = f"⚠️ Error descargando performance de {jugador.get('name', 'Jugador')}: {e}"
+        print(mensaje)
+        if log:
+            log(f"      ❌ {mensaje}")
         jugador["performance"] = []
     return jugador
 
 
-def completar_jugador(jugador: dict, indice_mercados: dict, client) -> dict:
+def completar_jugador(
+    jugador: dict,
+    indice_mercados: dict,
+    client,
+    log: Optional[Callable[[str], None]] = None,
+) -> dict:
     """
     Enriquece un jugador con sus mercados, histórico y resumen estadístico.
     Nunca interrumpe la generación del partido por un fallo aislado.
@@ -193,14 +217,25 @@ def completar_jugador(jugador: dict, indice_mercados: dict, client) -> dict:
     jugador["markets"] = indice_mercados.get(jugador["playerId"], {})
 
     try:
-        jugador = completar_performance(jugador, client)
+        jugador = completar_performance(jugador, client, log=log)
     except Exception as e:
-        print(f"⚠️ {jugador.get('name', 'Jugador')} -> Error en performance: {e}")
+        mensaje = f"⚠️ {jugador.get('name', 'Jugador')} -> Error en performance: {e}"
+        print(mensaje)
+        if log:
+            log(f"      ❌ {mensaje}")
 
     try:
         jugador["summary"] = generar_summary_jugador(jugador)
     except Exception as e:
-        print(f"⚠️ {jugador.get('name', 'Jugador')} -> Error en summary: {e}")
+        mensaje = f"⚠️ {jugador.get('name', 'Jugador')} -> Error en summary: {e}"
+        print(mensaje)
+        if log:
+            log(f"      ❌ {mensaje}")
         jugador["summary"] = {}
+
+    if log:
+        n_partidos = len(jugador.get("performance", []))
+        n_mercados_con_historial = len(jugador.get("summary", {}))
+        log(f"      → {n_partidos} partidos de histórico, {n_mercados_con_historial} mercados con datos")
 
     return jugador
