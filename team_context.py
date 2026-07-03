@@ -32,7 +32,30 @@ IMPORTANTE - qué es dato real y qué es aproximación:
   probabilidad del jugador, pero nunca puede dominar sobre su propio
   histórico real.
 
-FIX (esta ronda) - doble conteo en shots_total:
+FIX (esta ronda) - tournament_ids hardcodeado:
+La versión anterior fijaba TOURNAMENT_IDS_DEFAULT = "16,246,308,851"
+para todas las llamadas. Verificado con Colombia (team_id 4820): sin
+pasar tournamentIds en absoluto, la API ya devuelve por sí sola
+exactamente las mismas 4 competiciones que StatsHub marca activas por
+defecto en su filtro (FIFA World Cup=16, Copa América=133, World Cup
+Qualification CONMEBOL=295, Int. Friendly Games=851) y el promedio
+resultante coincide al milímetro (12.90) con el que muestra la propia
+app. La lista hardcodeada tenía dos problemas: incluía IDs que no
+existen para Colombia (246, 308, en vez de 133, 295 que son los
+reales), y aunque estuviera bien para una confederación, se rompería
+en silencio para cualquier equipo de otra (AFC, CAF...). Por eso
+`tournament_ids` ahora es None por defecto: se deja que la propia API
+decida, en vez de mantener una lista por confederación imposible de
+cubrir con precisión.
+
+También se detectó (no achacable a nuestro código) que la vista
+"Gráficos" de la app de StatsHub parece contar partidos sin dato como
+si valieran 0 en el promedio, mientras que su vista "Tablas" los
+excluye correctamente -- por eso una comparación inicial contra
+"Gráficos" (9.93) no cuadraba, y contra "Tablas" (12.90, calculado a
+mano sumando los 20 valores reales) sí cuadra con nuestro dato.
+
+FIX (ronda anterior) - doble conteo en shots_total:
 La versión anterior calculaba "shots_total" sumando manualmente
 totalShotsOnGoal + shotsOffGoal, cruzando dos listas por event_id.
 Verificado contra la API real (y contra las gráficas de la propia
@@ -55,14 +78,6 @@ no hace falta, y además ahorra 1 llamada HTTP por equipo (ya no se
 pide "shots_off_target" aparte).
 
 PENDIENTE (no se toca en esta ronda):
-- tournament_ids está fijo por defecto (ver TOURNAMENT_IDS_DEFAULT).
-  Es específico de qué competiciones ha jugado el equipo recientemente
-  y debería idealmente derivarse del propio equipo en vez de venir
-  hardcodeado. Esto fue precisamente lo que hizo que el primer
-  diagnóstico con Australia diera "sin datos" en todos los campos: no
-  era el team_id (ese estaba mal por otro motivo, ver historial), pero
-  sigue siendo un punto frágil si un equipo juega competiciones fuera
-  de esta lista fija.
 - CAMPO_RIVAL / REFERENCIA_LIGA solo cubren los 5 mercados originales
   (shots, shots_on_target, fouls, was_fouled, tackles). Los mercados
   nuevos (goles, xG, tarjetas...) no tienen todavía un stat de equipo
@@ -74,8 +89,6 @@ from statistics import mean
 from typing import Optional
 
 from scraper import StatsHubClient, TEAM_STAT_KEYS
-
-TOURNAMENT_IDS_DEFAULT = "16,246,308,851"  # ver nota: específico del equipo, revisar
 
 TOPE_AJUSTE = 0.15  # el contexto de equipo nunca mueve la probabilidad más de un ±15%
 
@@ -138,7 +151,7 @@ def construir_resumen_equipo(
     client: StatsHubClient,
     team_id: int,
     nombre_equipo: str = "",
-    tournament_ids: str = TOURNAMENT_IDS_DEFAULT,
+    tournament_ids: Optional[str] = None,
     limit: int = 20,
 ) -> dict:
     """
