@@ -26,6 +26,18 @@ tiros fuera DOS VECES (una ya incluidos dentro de totalShotsOnGoal, y
 otra sumados aparte) -> de ahí que Australia diera 12.05 en vez del
 7.6 real. Ver también team_context.py, donde ya no hace falta cruzar
 dos listas por event_id para calcular shots_total.
+
+FIX (ronda siguiente): `tournament_ids` en obtener_stat_equipo ya NO
+tiene un valor hardcodeado por defecto en team_context.py (antes era
+"16,246,308,851", con IDs válidos solo para un puñado de selecciones
+concretas). Verificado con Colombia: sin pasar tournamentIds, la API
+ya devuelve por sí sola exactamente las mismas competiciones que
+StatsHub marca por defecto en su filtro (FIFA World Cup, Copa
+América, World Cup Qualification CONMEBOL, Int. Friendly Games) y el
+promedio coincide al milímetro (12.90) con el que muestra la propia
+app. Un equipo de otra confederación (AFC, CAF...) simplemente no
+tendría partidos con esos IDs y el filtro fallaría en silencio -> es
+mejor dejar que la API decida su propio conjunto por defecto.
 """
 
 import json
@@ -262,7 +274,7 @@ class StatsHubClient:
         self,
         team_id: int,
         statistic_key: str,
-        tournament_ids: str,
+        tournament_ids: Optional[str] = None,
         limit: int = 20,
     ) -> List[dict]:
         """
@@ -271,11 +283,20 @@ class StatsHubClient:
         es "a favor" o "en contra" del equipo que nos interesa, hay
         que comparar team_id contra home_team_id/away_team_id de cada
         fila (esto se hace en team_context.py).
+
+        `tournament_ids` es opcional (por defecto None): si no se pasa,
+        dejamos que la API use su propio conjunto de competiciones
+        "activas" por defecto, que verificado coincide exacto con lo
+        que muestra la app de StatsHub (ver FIX en el docstring del
+        módulo). Solo se añade el parámetro a la URL si se especifica
+        explícitamente.
         """
         url = (
             f"https://www.statshub.com/api/team/{team_id}/event-statistics"
             f"?eventType=all&statisticKey={statistic_key}&eventHalf=ALL"
-            f"&tournamentIds={tournament_ids}&limit={limit}"
+            f"&limit={limit}"
         )
+        if tournament_ids:
+            url += f"&tournamentIds={tournament_ids}"
         data = self.get_json(url)
         return data.get("data", [])
