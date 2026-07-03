@@ -69,7 +69,8 @@ if enviado:
             st.error(f"Error al analizar el partido: {e}")
             st.stop()
 
-    progreso_box.empty()
+    with st.expander("🔍 Log de descarga (para diagnóstico)"):
+        st.code("\n".join(log_lines))
 
     resumen = partido["summary"]
     st.subheader(f"{resumen['home_team']} vs {resumen['away_team']}")
