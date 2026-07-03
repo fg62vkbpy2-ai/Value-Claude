@@ -18,6 +18,17 @@ CAMBIOS respecto a la v1/v3 del notebook original:
   a la primera; aquí solo existe una versión de cada función).
 - El quality_score ahora SÍ se usa para ordenar los picks por defecto
   (antes se calculaba pero no se aplicaba en el informe final).
+
+AMPLIACIÓN (contexto narrativo):
+- construir_contexto_jugadores() extrae, para CADA jugador y CADA
+  mercado con histórico (tenga o no cuota ofertada por las casas), un
+  resumen legible: media, tendencia, consistencia, factor de rival...
+  Esto es distinto de los "picks": un pick exige una cuota real para
+  poder calcular edge/EV. El contexto no exige cuota, porque su
+  objetivo es dar a una IA toda la información posible del partido
+  aunque no se pueda apostar directamente sobre ese dato (p. ej.
+  "no hay mercado de foul_involvements pero el histórico + el rival
+  sugieren que es un mercado interesante si aparece cuota luego").
 """
 
 import math
@@ -359,7 +370,7 @@ def analizar_jugador(jugador: dict) -> List[dict]:
         if summary is None:
             continue
 
-        factor_rival = factor_ajuste(contexto_rival.get(mercado), mercado)
+        factor_rival = factor_ajuste(contexto_rival, mercado)
 
         for apuesta in apuestas:
             try:
@@ -419,3 +430,70 @@ def mejores_picks(
 
     picks = ordenar_picks(picks, campo=ordenar_por)
     return picks[:top]
+
+
+# ----------------------------------------------------------------------
+# Contexto narrativo: TODOS los mercados con histórico, tengan o no
+# cuota ofertada. Esto NO son picks (no requieren cuota ni edge), es
+# información adicional pensada para dársela a una IA como contexto
+# de análisis (estilo de juego, duelos probables, dinámicas...).
+# ----------------------------------------------------------------------
+
+def construir_contexto_jugadores(partido: dict) -> List[dict]:
+    """
+    Para cada jugador, resume TODOS los mercados de los que hay
+    histórico (jugador["summary"]), tengan o no cuota ofertada por las
+    casas ahora mismo. Incluye el factor_rival de cada mercado (cómo
+    de permeable es el rival concreto en ese aspecto del juego), para
+    que una IA pueda razonar del tipo:
+
+    "No hay cuota de foul_involvements para este partido, pero el
+    histórico de Irankunda (3.6 de media, hit-rate 50% en línea 3.5,
+    tendencia UP) combinado con que el rival concede más faltas de lo
+    habitual en banda, hace que sea un mercado a vigilar si aparece
+    cuota más tarde."
+
+    No filtra por calidad de muestra (a diferencia de es_mercado_valido)
+    porque el objetivo aquí no es decidir si apostar, sino dar contexto
+    completo; es la IA (o el usuario) quien decide qué tan fiable es
+    cada dato según n_partidos_validos.
+    """
+    contexto = []
+
+    for jugador in partido.get("players", []):
+        summary_jugador = jugador.get("summary", {})
+        if not summary_jugador:
+            continue
+
+        contexto_rival = jugador.get("rival_context", {})
+        mercados_con_cuota = jugador.get("markets", {})
+
+        stats_por_mercado = {}
+        for mercado, summary in summary_jugador.items():
+            if summary is None:
+                continue
+
+            lineas_ofertadas = mercados_con_cuota.get(mercado, [])
+
+            stats_por_mercado[mercado] = {
+                "mean5": summary["mean5"],
+                "mean10": summary["mean10"],
+                "stdev": summary["stdev"],
+                "trend": summary["trend"],
+                "consistency": summary["consistency"],
+                "n_partidos_validos": summary["n_partidos_validos"],
+                "overs": summary["overs"],  # hit-rate por línea, si hay líneas conocidas
+                "factor_rival": factor_ajuste(contexto_rival, mercado),
+                "tiene_cuota_actualmente": len(lineas_ofertadas) > 0,
+            }
+
+        if stats_por_mercado:
+            contexto.append({
+                "player": jugador["name"],
+                "playerId": jugador["playerId"],
+                "team": jugador.get("team"),
+                "position": jugador.get("position"),
+                "stats": stats_por_mercado,
+            })
+
+    return contexto
