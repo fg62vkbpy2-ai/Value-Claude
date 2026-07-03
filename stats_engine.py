@@ -85,9 +85,24 @@ def extraer_serie(
         if valor is None:
             continue
 
+        # StatsHub no siempre devuelve estos campos como número: según
+        # el partido/fuente, "shots" (u otro campo) puede llegar como
+        # "2" (string) en vez de 2. Sin este cast, mean()/pstdev() más
+        # adelante lanzan "can't convert type 'str'..." y se pierde
+        # TODO el histórico del jugador, no solo ese partido.
+        try:
+            valor = float(valor)
+        except (TypeError, ValueError):
+            continue
+
         # Si tenemos el dato de minutos, filtramos los cameos.
         # Si no lo tenemos (dato ausente), no descartamos el partido
         # para no perder muestra por un campo que a veces falta.
+        if minutos is not None:
+            try:
+                minutos = float(minutos)
+            except (TypeError, ValueError):
+                minutos = None
         if minutos is not None and minutos < minutos_minimos:
             continue
 
