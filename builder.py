@@ -12,6 +12,13 @@ from scraper import StatsHubClient
 from stats_engine import completar_jugador
 from team_context import construir_resumen_equipo
 
+# Pausa entre cada llamada de /player/{id}/performance. Con 20-22
+# jugadores por partido, esto añade unos 3-5s al total, pero reduce
+# el riesgo de que StatsHub empiece a devolver 429/403 por ráfaga
+# (sospecha, no confirmado: si tras esto los fallos persisten, no es
+# rate-limiting y hay que investigar otra causa).
+PAUSA_ENTRE_PERFORMANCE = 0.25
+
 
 def generar_match_summary(evento: dict) -> dict:
     return {
@@ -107,14 +114,19 @@ def construir_partido(
         lado = jugador.get("team")
         jugador["rival_context"] = contexto_por_equipo.get(lado, {})
         jugador["team"] = nombre_equipo_por_lado.get(lado, lado)
-        jugador = completar_jugador(jugador, indice, client)
+        jugador = completar_jugador(jugador, indice, client, log=log)
         jugadores_final.append(jugador)
+        if i < total:
+            time.sleep(PAUSA_ENTRE_PERFORMANCE)
+
+    con_historial = sum(1 for j in jugadores_final if j.get("summary"))
+    log(f"📊 Jugadores con histórico utilizable: {con_historial}/{total}")
 
     tiempo = round(time.time() - inicio, 2)
     log(f"✅ Partido construido en {tiempo}s")
 
     return {
-        "version": "2.3",
+        "version": "2.4",
         "summary": generar_match_summary(evento),
         "event": evento,
         "players": jugadores_final,
