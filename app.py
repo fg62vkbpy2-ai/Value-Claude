@@ -141,12 +141,13 @@ if enviado:
                         "team": j["team"],
                         "position": j["position"],
                         "market": mercado,
-                        "mean10": stats["mean10"],
-                        "trend": stats["trend"],
-                        "consistency": stats["consistency"],
-                        "factor_rival": stats["factor_rival"],
-                        "n_partidos": stats["n_partidos_validos"],
-                        "con_cuota_hoy": stats["tiene_cuota_actualmente"],
+                        "mean10": stats.get("mean10"),
+                        "trend": stats.get("trend", "-"),
+                        "consistency": stats.get("consistency"),
+                        "factor_rival": stats.get("factor_rival"),
+                        "n_partidos": stats.get("n_partidos_validos"),
+                        "con_cuota_hoy": stats.get("tiene_cuota_actualmente", False),
+                        "nota": stats.get("nota", ""),
                     })
             st.dataframe(pd.DataFrame(filas_contexto), use_container_width=True, height=400, hide_index=True)
 
