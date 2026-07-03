@@ -13,6 +13,19 @@ Descarga los datos crudos de StatsHub para un partido:
 
 Toda la lógica viene del notebook original de Colab, reorganizada en
 una clase reutilizable (StatsHubClient) en vez de funciones sueltas.
+
+FIX (esta ronda): TEAM_STAT_KEYS tenía "shots_on_target" apuntando a
+"totalShotsOnGoal", pero verificado contra la API real (comparado con
+las gráficas de la propia StatsHub: Australia daba 7.6 de media en
+"Tiros Totales a Puerta" con ese campo, y 2.9 en la pestaña "SOT"),
+"totalShotsOnGoal" es en realidad el TOTAL de tiros (a puerta + fuera
++ bloqueados) pese a su nombre engañoso. El campo real de "tiros a
+puerta" es "shotsOnGoal". Antes de este fix, "shots_total" se
+calculaba sumando totalShotsOnGoal + shotsOffGoal, lo que contaba los
+tiros fuera DOS VECES (una ya incluidos dentro de totalShotsOnGoal, y
+otra sumados aparte) -> de ahí que Australia diera 12.05 en vez del
+7.6 real. Ver también team_context.py, donde ya no hace falta cruzar
+dos listas por event_id para calcular shots_total.
 """
 
 import json
@@ -61,10 +74,19 @@ STAT_TYPES = {
 
 # Stats de EQUIPO (endpoint distinto: /team/{id}/event-statistics).
 # Nombre interno -> statisticKey real de StatsHub.
+#
+# OJO con los nombres engañosos de StatsHub (verificado contra la API
+# real, no es una suposición):
+#   - "totalShotsOnGoal" = TOTAL de tiros (a puerta + fuera + bloqueados),
+#     a pesar del nombre. Lo usamos para "shots_total".
+#   - "shotsOnGoal" = tiros A PUERTA de verdad. Lo usamos para
+#     "shots_on_target".
+# Antes de este fix estaban intercambiados/duplicados, lo que producía
+# un doble conteo en shots_total. Ver team_context.py para el cálculo.
 TEAM_STAT_KEYS = {
     "corners": "cornerKicks",
-    "shots_on_target": "totalShotsOnGoal",
-    "shots_off_target": "shotsOffGoal",
+    "shots_total": "totalShotsOnGoal",
+    "shots_on_target": "shotsOnGoal",
     "fouls": "fouls",
     "tackles": "totalTackle",
     "saves_portero": "goalkeeperSaves",
