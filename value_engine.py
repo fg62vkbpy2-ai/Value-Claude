@@ -19,16 +19,21 @@ CAMBIOS respecto a la v1/v3 del notebook original:
 - El quality_score ahora SÍ se usa para ordenar los picks por defecto
   (antes se calculaba pero no se aplicaba en el informe final).
 
-AMPLIACIÓN (contexto narrativo):
+CONTEXTO NARRATIVO (ronda anterior):
 - construir_contexto_jugadores() extrae, para CADA jugador y CADA
-  mercado con histórico (tenga o no cuota ofertada por las casas), un
-  resumen legible: media, tendencia, consistencia, factor de rival...
-  Esto es distinto de los "picks": un pick exige una cuota real para
-  poder calcular edge/EV. El contexto no exige cuota, porque su
-  objetivo es dar a una IA toda la información posible del partido
-  aunque no se pueda apostar directamente sobre ese dato (p. ej.
-  "no hay mercado de foul_involvements pero el histórico + el rival
-  sugieren que es un mercado interesante si aparece cuota luego").
+  mercado con histórico, un resumen legible (media, tendencia,
+  consistencia, factor de rival), tenga o no cuota ofertada.
+
+CUOTAS EN EL CONTEXTO (esta ronda):
+- El bloque "picks" solo incluye mercados que pasaron es_mercado_valido
+  (>= 6 partidos, dispersión aceptable, edge > 0...). Cualquier mercado
+  con cuota real que NO pasara ese filtro quedaba invisible para la IA
+  -> no podía calcular su propio edge en esos casos "borderline".
+- Ahora construir_contexto_jugadores() también incluye, dentro de cada
+  mercado, la lista de líneas con cuota real (mejor cuota, casa,
+  probabilidad implícita, consenso), pasen o no el filtro interno. La
+  decisión de qué es "value" queda más en manos de quien lea el
+  informe (la IA), no solo pre-filtrada por nuestro criterio.
 """
 
 import math
@@ -40,6 +45,13 @@ from team_context import factor_ajuste
 MIN_CASAS_CONSENSO = 3  # por debajo de esto, no hay consenso real de mercado
 MARGEN_ASUMIDO_BASE = 0.06
 DISPERSION_ALERTA = 0.35  # a partir de aquí, las casas no se ponen de acuerdo
+
+# Umbrales para colapsar mercados sin señal real en el contexto narrativo
+# (ver _mercado_es_irrelevante). Un mercado con cuota real NUNCA se
+# colapsa, pase lo que pase con estos umbrales -- ahí puede haber
+# dinero de por medio y la IA debe verlo completo siempre.
+UMBRAL_MEAN_IRRELEVANTE = 0.3
+UMBRAL_RATE_IRRELEVANTE = 15.0
 
 
 # ----------------------------------------------------------------------
@@ -434,29 +446,79 @@ def mejores_picks(
 
 # ----------------------------------------------------------------------
 # Contexto narrativo: TODOS los mercados con histórico, tengan o no
-# cuota ofertada. Esto NO son picks (no requieren cuota ni edge), es
-# información adicional pensada para dársela a una IA como contexto
-# de análisis (estilo de juego, duelos probables, dinámicas...).
+# cuota ofertada. Esto NO son picks (no requieren superar el filtro
+# es_mercado_valido), es información adicional pensada para dársela a
+# una IA como contexto de análisis (estilo de juego, duelos probables,
+# dinámicas...). Cuando SÍ hay cuota, se incluye también -aunque no
+# haya pasado el filtro interno- para que la IA pueda calcular su
+# propio edge en vez de depender solo de los picks pre-aprobados.
 # ----------------------------------------------------------------------
+
+def _lineas_con_cuota(apuestas: List[dict]) -> List[dict]:
+    """
+    Para un mercado con cuota ofertada, devuelve una entrada por línea
+    con la mejor cuota, casa, probabilidad implícita y consenso entre
+    casas -- SIN aplicar es_mercado_valido. La decisión de si eso es
+    "value" o no la hace quien lea el informe, no este filtro.
+    """
+    lineas = []
+    for apuesta in apuestas:
+        mejor_cuota, bookmaker = obtener_mejor_cuota(apuesta)
+        if mejor_cuota is None:
+            continue
+
+        consenso = probabilidad_consenso(apuesta)
+        prob_consenso = consenso["prob_over_consenso"]
+
+        lineas.append({
+            "line": apuesta.get("line"),
+            "bookmaker": bookmaker,
+            "odds": mejor_cuota,
+            "prob_implicita": round(cuota_a_prob_implicita(mejor_cuota) * 100, 1),
+            "prob_mercado_consenso": round(prob_consenso * 100, 1) if prob_consenso is not None else None,
+            "n_casas_consenso": consenso["n_casas_validas"],
+            "dispersion_cv": consenso["dispersion_cv"],
+        })
+    return lineas
+
+
+def _mercado_es_irrelevante(summary: dict, lineas_con_cuota: List[dict]) -> bool:
+    """
+    Decide si un mercado aporta tan poca señal que conviene colapsarlo
+    a una nota de una línea en vez del bloque completo (mean/stdev/overs).
+
+    Un mercado con cuota real NUNCA se considera irrelevante, aunque su
+    media histórica sea baja -- ahí es la IA quien debe decidir, no
+    este filtro (mismo criterio que ya se aplicó para no pre-filtrar
+    por edge en _lineas_con_cuota).
+    """
+    if lineas_con_cuota:
+        return False
+
+    if summary["mean10"] > UMBRAL_MEAN_IRRELEVANTE:
+        return False
+
+    tasas = [o["rate"] for o in summary.get("overs", {}).values()]
+    max_rate = max(tasas) if tasas else 0
+
+    return max_rate <= UMBRAL_RATE_IRRELEVANTE
+
 
 def construir_contexto_jugadores(partido: dict) -> List[dict]:
     """
     Para cada jugador, resume TODOS los mercados de los que hay
-    histórico (jugador["summary"]), tengan o no cuota ofertada por las
-    casas ahora mismo. Incluye el factor_rival de cada mercado (cómo
-    de permeable es el rival concreto en ese aspecto del juego), para
-    que una IA pueda razonar del tipo:
+    histórico (jugador["summary"]), e incluye las cuotas reales de
+    cada línea ofertada en ese mercado (si las hay), tenga o no ese
+    mercado un "pick" aprobado por es_mercado_valido.
 
-    "No hay cuota de foul_involvements para este partido, pero el
-    histórico de Irankunda (3.6 de media, hit-rate 50% en línea 3.5,
-    tendencia UP) combinado con que el rival concede más faltas de lo
-    habitual en banda, hace que sea un mercado a vigilar si aparece
-    cuota más tarde."
-
-    No filtra por calidad de muestra (a diferencia de es_mercado_valido)
-    porque el objetivo aquí no es decidir si apostar, sino dar contexto
-    completo; es la IA (o el usuario) quien decide qué tan fiable es
-    cada dato según n_partidos_validos.
+    Con esto, un mercado puede aparecer en el contexto de tres formas:
+    - Sin cuota en absoluto ("lineas_con_cuota": [], "tiene_cuota_actualmente": false)
+      -> solo sirve como dato narrativo (tendencia, duelo probable...).
+    - Con cuota pero sin pick aprobado -> "lineas_con_cuota" trae los
+      datos completos (cuota, prob. implícita, consenso) para que la
+      IA calcule su propio edge con su propia estimación de probabilidad.
+    - Con cuota Y pick aprobado -> aparece aquí Y en el bloque "picks"
+      del informe (con el edge/EV ya calculado por nuestro modelo).
     """
     contexto = []
 
@@ -473,7 +535,19 @@ def construir_contexto_jugadores(partido: dict) -> List[dict]:
             if summary is None:
                 continue
 
-            lineas_ofertadas = mercados_con_cuota.get(mercado, [])
+            lineas_con_cuota = _lineas_con_cuota(mercados_con_cuota.get(mercado, []))
+
+            if _mercado_es_irrelevante(summary, lineas_con_cuota):
+                # Colapsado: sin cuota Y sin señal histórica real. Se
+                # conserva la media (por si acaso) pero se omite el
+                # desglose completo de overs/stdev, que aquí solo sería
+                # una lista de ceros/casi-ceros sin valor añadido.
+                stats_por_mercado[mercado] = {
+                    "mean10": summary["mean10"],
+                    "n_partidos_validos": summary["n_partidos_validos"],
+                    "nota": "casi nunca ocurre (histórico irrelevante, sin cuota ofertada)",
+                }
+                continue
 
             stats_por_mercado[mercado] = {
                 "mean5": summary["mean5"],
@@ -484,7 +558,8 @@ def construir_contexto_jugadores(partido: dict) -> List[dict]:
                 "n_partidos_validos": summary["n_partidos_validos"],
                 "overs": summary["overs"],  # hit-rate por línea, si hay líneas conocidas
                 "factor_rival": factor_ajuste(contexto_rival, mercado),
-                "tiene_cuota_actualmente": len(lineas_ofertadas) > 0,
+                "tiene_cuota_actualmente": len(lineas_con_cuota) > 0,
+                "lineas_con_cuota": lineas_con_cuota,
             }
 
         if stats_por_mercado:
