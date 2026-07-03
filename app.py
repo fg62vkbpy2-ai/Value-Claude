@@ -6,7 +6,9 @@ Uso:
   1. Pega la URL del partido de StatsHub (la de la ficha del partido).
   2. Pulsa "Analizar partido".
   3. Revisa la tabla de picks, ordenada por quality_score (o edge/ev).
-  4. Descarga el informe en JSON si quieres guardarlo.
+  4. Descarga el informe en JSON si quieres guardarlo (incluye tanto
+     los picks apostables como el contexto narrativo completo de cada
+     jugador, tenga o no cuota ofertada, para pasárselo a una IA).
 
 Para desplegarla y usarla desde el iPhone, sigue el README.md.
 """
@@ -17,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from builder import construir_partido
-from value_engine import mejores_picks
+from value_engine import mejores_picks, construir_contexto_jugadores
 
 st.set_page_config(page_title="ValueBet Engine", page_icon="⚽", layout="wide")
 
@@ -113,10 +115,47 @@ if enviado:
                 f"{team_summary.get('away', {}).get('equipo', 'visitante')}."
             )
 
+    # Contexto narrativo: TODOS los mercados con histórico, tengan o no
+    # cuota ofertada ahora mismo. No son picks, son datos para que la
+    # IA razone (duelos, tendencias, faltas probables...) aunque no
+    # haya nada que apostar directamente sobre ese dato en concreto.
+    contexto_jugadores = construir_contexto_jugadores(partido)
+
+    if contexto_jugadores:
+        with st.expander(
+            f"📎 Contexto adicional de jugadores ({len(contexto_jugadores)} jugadores, "
+            f"incluye mercados sin cuota ofertada)"
+        ):
+            st.caption(
+                "Esto no son picks (no todos tienen cuota real para calcular EV), "
+                "es el histórico completo de cada jugador en todos los mercados "
+                "disponibles. Se incluye igualmente en el informe descargable para "
+                "dar más contexto a la IA."
+            )
+            filas_contexto = []
+            for j in contexto_jugadores:
+                for mercado, stats in j["stats"].items():
+                    filas_contexto.append({
+                        "player": j["player"],
+                        "team": j["team"],
+                        "position": j["position"],
+                        "market": mercado,
+                        "mean10": stats["mean10"],
+                        "trend": stats["trend"],
+                        "consistency": stats["consistency"],
+                        "factor_rival": stats["factor_rival"],
+                        "n_partidos": stats["n_partidos_validos"],
+                        "con_cuota_hoy": stats["tiene_cuota_actualmente"],
+                    })
+            st.dataframe(pd.DataFrame(filas_contexto), use_container_width=True, height=400, hide_index=True)
+
     picks = mejores_picks(partido, top=top_n, ordenar_por=orden, deduplicar=deduplicar)
 
     if not picks:
-        st.warning("No se encontraron picks con edge positivo para este partido.")
+        st.warning(
+            "No se encontraron picks con edge positivo para este partido "
+            "(recuerda que sí puede haber contexto útil arriba aunque no haya picks)."
+        )
     else:
         df = pd.DataFrame(picks)
 
@@ -142,17 +181,24 @@ if enviado:
             height=600,
         )
 
-        informe = {"summary": resumen, "team_context": team_summary, "picks": picks}
-        nombre_archivo = (
-            f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}.json"
-        ).replace(" ", "_")
+    # El informe SIEMPRE se genera y se puede descargar, haya o no picks,
+    # porque el contexto narrativo por sí solo ya tiene valor para la IA.
+    informe = {
+        "summary": resumen,
+        "team_context": team_summary,
+        "player_context": contexto_jugadores,
+        "picks": picks,
+    }
+    nombre_archivo = (
+        f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}.json"
+    ).replace(" ", "_")
 
-        st.download_button(
-            "📥 Descargar informe JSON",
-            data=json.dumps(informe, indent=2, ensure_ascii=False),
-            file_name=nombre_archivo,
-            mime="application/json",
-        )
+    st.download_button(
+        "📥 Descargar informe JSON (picks + contexto completo)",
+        data=json.dumps(informe, indent=2, ensure_ascii=False),
+        file_name=nombre_archivo,
+        mime="application/json",
+    )
 
 st.divider()
 with st.expander("ℹ️ Cómo leer la tabla"):
@@ -166,5 +212,6 @@ with st.expander("ℹ️ Cómo leer la tabla"):
 - **hit_rate** / **games**: cuántas veces superó la línea de las últimas partidos "válidas" (excluyendo cameos de pocos minutos). Con `games` bajo (6-7) el hit_rate es menos fiable que con 9-10 — el `quality_score` ya lo penaliza, pero conviene mirarlo directamente si vas a apostar fuerte.
 - **factor_rival**: ajuste (±15% máx.) aplicado a la media del jugador según cómo de permeable es el rival en ese mercado (p. ej. un rival que concede muchos tiros sube ligeramente la probabilidad de "shots"). 1.00 = sin ajuste, no había suficiente dato del rival.
 - **n_casas_consenso** / **dispersion_cv**: cuántas casas coinciden en esa cuota y cuánto varían entre sí. Dispersión alta = las propias casas no tienen claro el número, así que el "edge" es menos fiable.
+- **Contexto adicional (sección aparte)**: histórico de TODOS los mercados de cada jugador, tengan o no cuota ofertada hoy. No son picks — es información extra para que la IA pueda razonar sobre duelos, tendencias y probabilidades de faltas/tiros/etc. aunque no haya nada que apostar directamente ahora mismo.
         """
     )
