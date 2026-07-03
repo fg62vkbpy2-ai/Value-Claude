@@ -20,6 +20,7 @@ import streamlit as st
 
 from builder import construir_partido
 from value_engine import mejores_picks, construir_contexto_jugadores
+from export_texto import generar_informe_texto
 
 st.set_page_config(page_title="ValueBet Engine", page_icon="⚽", layout="wide")
 
@@ -189,16 +190,44 @@ if enviado:
         "player_context": contexto_jugadores,
         "picks": picks,
     }
-    nombre_archivo = (
-        f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}.json"
+    nombre_sugerido = (
+        f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}"
     ).replace(" ", "_")
 
-    st.download_button(
-        "📥 Descargar informe JSON (picks + contexto completo)",
-        data=json.dumps(informe, indent=2, ensure_ascii=False),
-        file_name=nombre_archivo,
-        mime="application/json",
+    st.divider()
+    nombre_base = st.text_input(
+        "Nombre del archivo (sin extensión, se usa para ambas descargas)",
+        value=nombre_sugerido,
     )
+    nombre_base = nombre_base.strip() or nombre_sugerido
+
+    col_json, col_texto = st.columns(2)
+    with col_json:
+        st.download_button(
+            "📥 Descargar informe JSON (picks + contexto completo)",
+            data=json.dumps(informe, indent=2, ensure_ascii=False),
+            file_name=f"{nombre_base}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with col_texto:
+        informe_texto = generar_informe_texto(partido, picks, contexto_jugadores)
+        st.download_button(
+            "📝 Descargar informe compacto (.txt, para pegar en la IA)",
+            data=informe_texto,
+            file_name=f"{nombre_base}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+    with st.expander("👁️ Vista previa del informe compacto (con botón de copiar)"):
+        st.caption(
+            "Mismo contenido que el JSON, en texto plano sin la sobrecarga "
+            "estructural de claves repetidas -- pensado para pegar directo "
+            "en un chat de IA. Pasa el ratón por encima para ver el icono "
+            "de copiar."
+        )
+        st.code(informe_texto, language=None)
 
 st.divider()
 with st.expander("ℹ️ Cómo leer la tabla"):
