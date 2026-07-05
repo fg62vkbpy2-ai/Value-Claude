@@ -116,6 +116,82 @@ if enviado:
                 f"{team_summary.get('away', {}).get('equipo', 'visitante')}."
             )
 
+    # Calculadora de mercados de EQUIPO con cuota manual real (ver
+    # team_market.py). StatsHub no da cuotas de equipo, así que esto
+    # nunca aparece en la tabla de picks automática -- aquí introduces
+    # tú la cuota real que ves en tu casa de apuestas, y se calcula
+    # prob_modelo con el mismo motor que usamos para jugadores, sobre
+    # el histórico real del equipo (no una estimación de un LLM).
+    with st.expander("🧮 Calculadora de mercados de equipo (cuota real, sin StatsHub)"):
+        st.caption(
+            "Para tiros, tiros a puerta, córners, faltas, entradas o paradas de "
+            "portero de un EQUIPO. Introduce la cuota real de tu casa de apuestas "
+            "(idealmente 'Más de' y 'Menos de' para devigar de verdad; si solo das "
+            "una, se asume un margen del 6%)."
+        )
+        import team_market
+
+        col_eq, col_mkt, col_line = st.columns(3)
+        with col_eq:
+            lado_calc = st.radio(
+                "Equipo", ["Local", "Visitante"], horizontal=True, key="lado_calc"
+            )
+        with col_mkt:
+            mercado_calc = st.selectbox(
+                "Mercado",
+                list(team_market.ETIQUETAS_MERCADO.keys()),
+                format_func=lambda k: team_market.ETIQUETAS_MERCADO[k],
+                key="mercado_calc",
+            )
+        with col_line:
+            linea_calc = st.number_input(
+                "Línea", min_value=0.5, value=13.5, step=0.5, key="linea_calc"
+            )
+
+        col_over, col_under = st.columns(2)
+        with col_over:
+            odds_over_calc = st.number_input(
+                "Cuota 'Más de'", min_value=1.01, value=1.90, step=0.01, key="odds_over_calc"
+            )
+        with col_under:
+            odds_under_calc = st.number_input(
+                "Cuota 'Menos de' (opcional, mejora la precisión)",
+                min_value=0.0, value=0.0, step=0.01, key="odds_under_calc",
+            )
+
+        if st.button("Calcular", key="btn_calc_equipo"):
+            evento = partido["event"]
+            team_id_calc = evento["homeTeamId"] if lado_calc == "Local" else evento["awayTeamId"]
+            nombre_calc = resumen["home_team"] if lado_calc == "Local" else resumen["away_team"]
+
+            from scraper import StatsHubClient
+            client_calc = StatsHubClient()
+            resultado_calc = team_market.analizar_pick_equipo(
+                client_calc, team_id_calc, nombre_calc, mercado_calc, linea_calc,
+                odds_over_calc, odds_under_calc if odds_under_calc > 0 else None,
+            )
+
+            if resultado_calc is None:
+                st.error("No hay datos suficientes de StatsHub para este mercado/equipo.")
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("prob_modelo", f"{resultado_calc['prob_modelo']}%")
+                c2.metric("prob_mercado", f"{resultado_calc['prob_mercado']}%")
+                c3.metric("edge", f"{resultado_calc['edge']:+.2f}")
+                c4.metric("EV", f"{resultado_calc['ev']:+.2f}%")
+                st.caption(
+                    f"Histórico: {resultado_calc['hit_rate']}% "
+                    f"({resultado_calc['hits']}/{resultado_calc['games']}) · "
+                    f"tendencia {resultado_calc['trend']} · "
+                    f"media10={resultado_calc['mean10']} · "
+                    f"margen mercado estimado {resultado_calc['margen_mercado_pct']}%"
+                    + (
+                        " (sin 'Menos de', margen asumido 6%)"
+                        if odds_under_calc == 0
+                        else " (devig real con las dos cuotas)"
+                    )
+                )
+
     # Contexto narrativo: TODOS los mercados con histórico, tengan o no
     # cuota ofertada ahora mismo. No son picks, son datos para que la
     # IA razone (duelos, tendencias, faltas probables...) aunque no
@@ -243,5 +319,6 @@ with st.expander("ℹ️ Cómo leer la tabla"):
 - **factor_rival**: ajuste (±15% máx.) aplicado a la media del jugador según cómo de permeable es el rival en ese mercado (p. ej. un rival que concede muchos tiros sube ligeramente la probabilidad de "shots"). 1.00 = sin ajuste, no había suficiente dato del rival.
 - **n_casas_consenso** / **dispersion_cv**: cuántas casas coinciden en esa cuota y cuánto varían entre sí. Dispersión alta = las propias casas no tienen claro el número, así que el "edge" es menos fiable.
 - **Contexto adicional (sección aparte)**: histórico de TODOS los mercados de cada jugador, tengan o no cuota ofertada hoy. No son picks — es información extra para que la IA pueda razonar sobre duelos, tendencias y probabilidades de faltas/tiros/etc. aunque no haya nada que apostar directamente ahora mismo.
+- **🧮 Calculadora de mercados de equipo**: como StatsHub no da cuotas de equipo, aquí introduces tú la cuota real y se calcula todo con el mismo motor que los jugadores, sobre el histórico real del equipo — no es una estimación de una IA.
         """
     )
