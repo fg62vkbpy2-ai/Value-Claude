@@ -68,11 +68,22 @@ if enviado:
     with st.spinner("Descargando y analizando el partido... (puede tardar ~20-30s)"):
         try:
             partido = construir_partido(url.strip(), debug=False, progreso=progreso)
+            # Guardamos en session_state: sin esto, en cuanto se toque
+            # cualquier widget fuera del formulario (la calculadora de
+            # equipo, por ejemplo), Streamlit vuelve a ejecutar el
+            # script desde arriba, "enviado" vuelve a ser False, y todo
+            # este bloque desaparecería como si no hubiera pasado nada.
+            st.session_state["partido"] = partido
+            st.session_state["log_lines"] = log_lines
         except Exception as e:
             st.error(f"Error al analizar el partido: {e}")
             st.stop()
 
     progreso_box.empty()
+
+if "partido" in st.session_state:
+    partido = st.session_state["partido"]
+    log_lines = st.session_state.get("log_lines", [])
 
     with st.expander("🔍 Log de descarga (para diagnóstico)"):
         st.code("\n".join(log_lines))
