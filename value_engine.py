@@ -97,7 +97,7 @@ def probabilidad_historica(summary: dict, linea: float) -> Optional[float]:
     return over["rate"]
 
 
-def estimar_probabilidad(summary: dict, linea: float, factor_rival: float = 1.0) -> Optional[float]:
+def estimar_probabilidad(summary: dict, linea: Optional[float], factor_rival: float = 1.0) -> Optional[float]:
     """
     Combina la probabilidad de una distribución normal (60%) con el
     hit-rate histórico real (40%), y ajusta por tendencia y
@@ -109,7 +109,16 @@ def estimar_probabilidad(summary: dict, linea: float, factor_rival: float = 1.0)
     habitual en ese mercado (ver team_context.py). El hit-rate
     histórico (p_hist) NO se toca, porque ya es un dato observado real
     y no tiene sentido "corregirlo" retroactivamente.
+
+    Si `linea` es None (mercados binarios sin umbral numérico, p. ej.
+    "recibe tarjeta amarilla: sí/no"), no hay forma de calcular la
+    parte de distribución normal -- se devuelve None para que el
+    mercado se clasifique como D (sin datos suficientes) en vez de
+    lanzar una excepción silenciosa que lo hace desaparecer del todo.
     """
+    if linea is None:
+        return None
+
     media = summary["mean10"] * factor_rival
     desviacion = summary["stdev"]
 
