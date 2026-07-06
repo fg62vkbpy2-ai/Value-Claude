@@ -24,16 +24,28 @@ CONTEXTO NARRATIVO (ronda anterior):
   mercado con histórico, un resumen legible (media, tendencia,
   consistencia, factor de rival), tenga o no cuota ofertada.
 
-CUOTAS EN EL CONTEXTO (esta ronda):
-- El bloque "picks" solo incluye mercados que pasaron es_mercado_valido
-  (>= 6 partidos, dispersión aceptable, edge > 0...). Cualquier mercado
-  con cuota real que NO pasara ese filtro quedaba invisible para la IA
-  -> no podía calcular su propio edge en esos casos "borderline".
-- Ahora construir_contexto_jugadores() también incluye, dentro de cada
+CUOTAS EN EL CONTEXTO (ronda anterior):
+- construir_contexto_jugadores() también incluye, dentro de cada
   mercado, la lista de líneas con cuota real (mejor cuota, casa,
-  probabilidad implícita, consenso), pasen o no el filtro interno. La
-  decisión de qué es "value" queda más en manos de quien lea el
-  informe (la IA), no solo pre-filtrada por nuestro criterio.
+  probabilidad implícita, consenso), pasen o no el filtro interno.
+
+CLASIFICACIÓN EN 4 CATEGORÍAS (esta ronda, tras auditar México vs
+Inglaterra y detectar que Gordon y Quiñones tenían edge real pero
+quedaron invisibles por baja cobertura de datos, no por falta de
+valor):
+- es_mercado_valido() servía de puerta única: todo lo que no la
+  pasaba, desaparecía del informe sin dejar rastro. El motor SÍ había
+  detectado la anomalía (edge positivo) pero nunca se lo comunicaba
+  al usuario.
+- Ahora analizar_mercado() ya NO descarta en silencio: clasifica cada
+  mercado con cuota real en A (recomendado), B (verificar manual,
+  con checklist de qué falta y prioridad de revisión), C (descartado
+  por EV negativo) o D (sin datos suficientes ni para opinar). Ver
+  clasificacion_mercados.py para el detalle de cada categoría y las
+  fórmulas de prioridad_manual.
+- mejores_picks() se mantiene para compatibilidad (sigue devolviendo
+  solo la categoría A, como antes). Para el informe completo con las
+  4 categorías, usar mejores_picks_categorizado().
 """
 
 import math
@@ -41,6 +53,15 @@ from statistics import mean, pstdev
 from typing import List, Optional
 
 from team_context import factor_ajuste
+from clasificacion_mercados import (
+    CATEGORIA_RECOMENDADO,
+    CATEGORIA_VERIFICAR,
+    CATEGORIA_DESCARTADO,
+    CATEGORIA_SIN_DATOS,
+    clasificar_mercado,
+    formatear_entrada_verificacion,
+    formatear_mercado_excluido,
+)
 
 MIN_CASAS_CONSENSO = 3  # por debajo de esto, no hay consenso real de mercado
 MARGEN_ASUMIDO_BASE = 0.06
@@ -206,7 +227,8 @@ def obtener_mejor_cuota(apuesta: dict):
 
 
 # ----------------------------------------------------------------------
-# Filtro de mercados válidos (evita picks absurdos)
+# Filtro de mercados válidos (se mantiene para compatibilidad con
+# mejores_picks(); internamente equivale a exigir categoría A)
 # ----------------------------------------------------------------------
 
 def es_mercado_valido(summary: dict, linea: float, cuota: float, n_casas_consenso: int) -> bool:
@@ -232,8 +254,6 @@ def es_mercado_valido(summary: dict, linea: float, cuota: float, n_casas_consens
     if summary["consistency"] < 5:
         return False
 
-    # Sin consenso real entre casas no hay forma fiable de saber si hay
-    # valor de verdad -> se descarta el pick.
     if n_casas_consenso < MIN_CASAS_CONSENSO:
         return False
 
@@ -241,7 +261,7 @@ def es_mercado_valido(summary: dict, linea: float, cuota: float, n_casas_consens
 
 
 # ----------------------------------------------------------------------
-# Quality score (0-100): ahora sí se usa para ordenar los picks finales
+# Quality score (0-100)
 # ----------------------------------------------------------------------
 
 def calcular_quality_score(pick: dict) -> float:
@@ -301,44 +321,12 @@ def calcular_quality_score(pick: dict) -> float:
 # Análisis de un mercado / jugador / partido completo
 # ----------------------------------------------------------------------
 
-def analizar_mercado(
-    jugador: dict,
-    mercado: str,
-    apuesta: dict,
-    summary: dict,
-    factor_rival: float = 1.0,
-) -> Optional[dict]:
+def _construir_pick_base(jugador: dict, mercado: str, apuesta: dict, summary: dict,
+                          mejor_cuota: float, bookmaker: str, prob_modelo: Optional[float],
+                          consenso: dict, factor_rival: float) -> dict:
+    """Campos comunes de un pick, se usen luego para categoría A o B."""
     linea = apuesta["line"]
-
-    mejor_cuota, bookmaker = obtener_mejor_cuota(apuesta)
-    if mejor_cuota is None:
-        return None
-
-    consenso = probabilidad_consenso(apuesta)
-
-    if not es_mercado_valido(summary, linea, mejor_cuota, consenso["n_casas_validas"]):
-        return None
-
-    if consenso["prob_over_consenso"] is None:
-        return None
-
-    prob_modelo = estimar_probabilidad(summary, linea, factor_rival=factor_rival)
-    if prob_modelo is None:
-        return None
-
-    prob_modelo_frac = prob_modelo / 100
-    prob_mercado_frac = consenso["prob_over_consenso"]
-
-    edge = round((prob_modelo_frac - prob_mercado_frac) * 100, 2)
-    ev = round((prob_modelo_frac * mejor_cuota - 1) * 100, 2)
-
-    if edge <= 0:
-        return None
-
-    dispersion = consenso["dispersion_cv"]
-    alerta_dispersion = dispersion is not None and dispersion > DISPERSION_ALERTA
-
-    over = summary["overs"].get(str(linea))
+    over = summary["overs"].get(str(linea)) if summary else None
 
     pick = {
         "player": jugador["name"],
@@ -350,25 +338,92 @@ def analizar_mercado(
         "bookmaker": bookmaker,
         "odds": mejor_cuota,
         "prob_modelo": prob_modelo,
-        "prob_mercado_consenso": round(prob_mercado_frac * 100, 1),
         "n_casas_consenso": consenso["n_casas_validas"],
         "margen_medio_mercado": consenso["margen_medio"],
-        "dispersion_cv": dispersion,
-        "alerta_dispersion": alerta_dispersion,
-        "edge": edge,
-        "ev": ev,
-        "hits": over["hits"],
-        "games": over["games"],
-        "hit_rate": over["rate"],
-        "trend": summary["trend"],
-        "consistency": summary["consistency"],
-        "mean5": summary["mean5"],
-        "mean10": summary["mean10"],
-        "n_partidos_validos": summary.get("n_partidos_validos", over["games"]),
+        "dispersion_cv": consenso["dispersion_cv"],
         "factor_rival": factor_rival,
     }
 
-    pick["quality_score"] = calcular_quality_score(pick)
+    if consenso["prob_over_consenso"] is not None:
+        pick["prob_mercado_consenso"] = round(consenso["prob_over_consenso"] * 100, 1)
+
+    if over is not None:
+        pick.update({
+            "hits": over["hits"],
+            "games": over["games"],
+            "hit_rate": over["rate"],
+        })
+
+    if summary is not None:
+        pick.update({
+            "trend": summary.get("trend"),
+            "consistency": summary.get("consistency"),
+            "mean5": summary.get("mean5"),
+            "mean10": summary.get("mean10"),
+            "n_partidos_validos": summary.get("n_partidos_validos", pick.get("games")),
+        })
+
+    return pick
+
+
+def analizar_mercado(
+    jugador: dict,
+    mercado: str,
+    apuesta: dict,
+    summary: dict,
+    factor_rival: float = 1.0,
+) -> Optional[dict]:
+    """
+    Analiza un mercado con cuota real y devuelve SIEMPRE un pick con su
+    categoría (A/B/C/D) -- salvo que ni siquiera haya una cuota
+    ejecutable, en cuyo caso no hay nada que clasificar y se devuelve
+    None (esto no cuenta como "descarte silencioso": simplemente no
+    existe apuesta posible en ese mercado).
+
+    Antes: devolvía None en cuanto fallaba es_mercado_valido() y ese
+    mercado desaparecía del informe sin dejar rastro, aunque tuviera
+    edge positivo (caso Gordon/Quiñones, México vs Inglaterra).
+
+    Ahora: SIEMPRE se calcula edge/EV si hay datos suficientes para
+    ello, y se clasifica en A/B/C/D. Solo la categoría A entra en el
+    ranking de "picks recomendados"; B, C y D quedan documentadas para
+    que el usuario (o la IA leyendo el informe) sepa qué hay ahí y por
+    qué no se recomienda todavía.
+    """
+    linea = apuesta["line"]
+
+    mejor_cuota, bookmaker = obtener_mejor_cuota(apuesta)
+    if mejor_cuota is None:
+        return None
+
+    consenso = probabilidad_consenso(apuesta)
+    prob_modelo = estimar_probabilidad(summary, linea, factor_rival=factor_rival) if summary else None
+
+    pick = _construir_pick_base(
+        jugador, mercado, apuesta, summary, mejor_cuota, bookmaker, prob_modelo, consenso, factor_rival
+    )
+
+    clasificacion = clasificar_mercado(
+        summary=summary,
+        linea=linea,
+        mejor_cuota=mejor_cuota,
+        prob_modelo=prob_modelo,
+        prob_mercado_frac=consenso["prob_over_consenso"],
+        n_casas_consenso=consenso["n_casas_validas"],
+        dispersion_cv=consenso["dispersion_cv"],
+    )
+
+    pick["categoria"] = clasificacion["categoria"]
+    pick["edge"] = clasificacion.get("edge")
+    pick["ev"] = clasificacion.get("ev")
+
+    if clasificacion["categoria"] == CATEGORIA_VERIFICAR:
+        pick["prioridad_manual"] = clasificacion["prioridad_manual"]
+        pick["motivo_verificacion"] = clasificacion["motivo"]
+
+    if clasificacion["categoria"] == CATEGORIA_RECOMENDADO:
+        pick["quality_score"] = calcular_quality_score(pick)
+
     return pick
 
 
@@ -379,9 +434,6 @@ def analizar_jugador(jugador: dict) -> List[dict]:
 
     for mercado, apuestas in mercados.items():
         summary = jugador.get("summary", {}).get(mercado)
-        if summary is None:
-            continue
-
         factor_rival = factor_ajuste(contexto_rival, mercado)
 
         for apuesta in apuestas:
@@ -404,22 +456,24 @@ def analizar_partido(partido: dict) -> List[dict]:
 
 def deduplicar_picks(picks: List[dict]) -> List[dict]:
     """
-    Cuando un jugador tiene varias líneas del mismo mercado (p. ej.
-    tackles 0.5, 1.5, 2.5, 3.5...) esas apuestas están altamente
-    correlacionadas entre sí -> no son oportunidades independientes,
-    son casi la misma apuesta contada varias veces.
-
-    Nos quedamos solo con la mejor (mayor quality_score) por cada
-    combinación jugador+mercado, para que el ranking final muestre
-    variedad real en vez de que un solo jugador ocupe media tabla.
+    Cuando un jugador tiene varias líneas del mismo mercado, esas
+    apuestas están altamente correlacionadas -> no son oportunidades
+    independientes. Nos quedamos solo con la mejor por cada
+    combinación jugador+mercado, PERO ahora se deduplica dentro de
+    cada categoría por separado: una línea A no debe tapar a una
+    línea B del mismo mercado si son literalmente cuotas distintas
+    (p.ej. 0.5 vale para pick, 2.5 del mismo jugador queda a revisar).
     """
     mejores = {}
 
+    def _score_desempate(pick: dict) -> float:
+        return pick.get("quality_score") or pick.get("prioridad_manual") or pick.get("edge") or 0
+
     for pick in picks:
-        clave = (pick.get("playerId"), pick.get("market"))
+        clave = (pick.get("playerId"), pick.get("market"), pick.get("categoria"))
         actual = mejores.get(clave)
 
-        if actual is None or pick.get("quality_score", 0) > actual.get("quality_score", 0):
+        if actual is None or _score_desempate(pick) > _score_desempate(actual):
             mejores[clave] = pick
 
     return list(mejores.values())
@@ -435,7 +489,12 @@ def mejores_picks(
     ordenar_por: str = "quality_score",
     deduplicar: bool = True,
 ) -> List[dict]:
-    picks = analizar_partido(partido)
+    """
+    Compatibilidad con el comportamiento anterior: solo categoría A,
+    ordenados por quality_score. Para el informe completo con las 4
+    categorías, usar mejores_picks_categorizado().
+    """
+    picks = [p for p in analizar_partido(partido) if p.get("categoria") == CATEGORIA_RECOMENDADO]
 
     if deduplicar:
         picks = deduplicar_picks(picks)
@@ -444,14 +503,101 @@ def mejores_picks(
     return picks[:top]
 
 
+def mejores_picks_categorizado(partido: dict, deduplicar: bool = True) -> dict:
+    """
+    Informe completo en 4 categorías, tal como se decidió tras la
+    auditoría de México vs Inglaterra:
+
+    {
+        "recomendados": [...],   # categoría A, ordenados por quality_score
+        "verificar_manual": [...],  # categoría B, ordenados por prioridad_manual
+        "descartados": [...],    # categoría C
+        "sin_datos": [...],      # categoría D
+    }
+
+    Cada pick en "verificar_manual" ya trae "prioridad_manual" y
+    "motivo_verificacion" (con la lista de tareas ☐ concretas), listos
+    para formatear_entrada_verificacion().
+    """
+    todos = analizar_partido(partido)
+
+    if deduplicar:
+        todos = deduplicar_picks(todos)
+
+    recomendados = [p for p in todos if p.get("categoria") == CATEGORIA_RECOMENDADO]
+    verificar = [p for p in todos if p.get("categoria") == CATEGORIA_VERIFICAR]
+    descartados = [p for p in todos if p.get("categoria") == CATEGORIA_DESCARTADO]
+    sin_datos = [p for p in todos if p.get("categoria") == CATEGORIA_SIN_DATOS]
+
+    recomendados = ordenar_picks(recomendados, campo="quality_score")
+    verificar = ordenar_picks(verificar, campo="prioridad_manual")
+
+    return {
+        "recomendados": recomendados,
+        "verificar_manual": verificar,
+        "descartados": descartados,
+        "sin_datos": sin_datos,
+    }
+
+
+def formatear_informe_texto(categorias: dict) -> str:
+    """
+    Vuelca mejores_picks_categorizado() a texto plano, listo para
+    pegar en el informe: primero los recomendados, luego la cola de
+    verificación manual (con checklist), y al final el resumen corto
+    de mercados excluidos (C y D) para responder de antemano a
+    "¿por qué no sale X?".
+    """
+    bloques = []
+
+    bloques.append("=== 🟢 PICKS RECOMENDADOS ===")
+    if categorias["recomendados"]:
+        for p in categorias["recomendados"]:
+            bloques.append(
+                f"- {p['player']} ({p['team']}) | {p['market']} Over {p['line']} @ {p['odds']} ({p['bookmaker']}) "
+                f"| edge={p['edge']:+.1f} ev={p['ev']:+.1f}% quality={p['quality_score']}"
+            )
+    else:
+        bloques.append("(ninguno esta ronda)")
+
+    bloques.append("")
+    bloques.append("=== 🟡 VERIFICACIÓN MANUAL (por prioridad) ===")
+    if categorias["verificar_manual"]:
+        for p in categorias["verificar_manual"]:
+            bloques.append(formatear_entrada_verificacion(p, {
+                "hit_rate": p.get("hit_rate"),
+                "n_partidos": p.get("n_partidos_validos", p.get("games")),
+                "prioridad_manual": p["prioridad_manual"],
+                "motivo": p["motivo_verificacion"],
+            }))
+            bloques.append("")
+    else:
+        bloques.append("(ninguno esta ronda)")
+
+    bloques.append("=== ⚪ MERCADOS EXCLUIDOS (resumen) ===")
+    excluidos = categorias["descartados"] + categorias["sin_datos"]
+    if excluidos:
+        for p in excluidos:
+            clasificacion_min = {
+                "categoria": p["categoria"],
+                "edge": p.get("edge"),
+                "n_partidos": p.get("n_partidos_validos", p.get("games", 0)),
+                "motivo": p.get("motivo_verificacion", {"faltantes": [], "tareas": []}),
+            }
+            texto = formatear_mercado_excluido(p, clasificacion_min)
+            if texto:
+                bloques.append(texto)
+                bloques.append("")
+    else:
+        bloques.append("(ninguno esta ronda)")
+
+    return "\n".join(bloques)
+
+
 # ----------------------------------------------------------------------
 # Contexto narrativo: TODOS los mercados con histórico, tengan o no
-# cuota ofertada. Esto NO son picks (no requieren superar el filtro
-# es_mercado_valido), es información adicional pensada para dársela a
-# una IA como contexto de análisis (estilo de juego, duelos probables,
-# dinámicas...). Cuando SÍ hay cuota, se incluye también -aunque no
-# haya pasado el filtro interno- para que la IA pueda calcular su
-# propio edge en vez de depender solo de los picks pre-aprobados.
+# cuota ofertada. Esto NO son picks, es información adicional pensada
+# para dársela a una IA como contexto de análisis.
 # ----------------------------------------------------------------------
 
 def _lineas_con_cuota(apuestas: List[dict]) -> List[dict]:
@@ -487,10 +633,7 @@ def _mercado_es_irrelevante(summary: dict, lineas_con_cuota: List[dict]) -> bool
     Decide si un mercado aporta tan poca señal que conviene colapsarlo
     a una nota de una línea en vez del bloque completo (mean/stdev/overs).
 
-    Un mercado con cuota real NUNCA se considera irrelevante, aunque su
-    media histórica sea baja -- ahí es la IA quien debe decidir, no
-    este filtro (mismo criterio que ya se aplicó para no pre-filtrar
-    por edge en _lineas_con_cuota).
+    Un mercado con cuota real NUNCA se considera irrelevante.
     """
     if lineas_con_cuota:
         return False
@@ -509,16 +652,7 @@ def construir_contexto_jugadores(partido: dict) -> List[dict]:
     Para cada jugador, resume TODOS los mercados de los que hay
     histórico (jugador["summary"]), e incluye las cuotas reales de
     cada línea ofertada en ese mercado (si las hay), tenga o no ese
-    mercado un "pick" aprobado por es_mercado_valido.
-
-    Con esto, un mercado puede aparecer en el contexto de tres formas:
-    - Sin cuota en absoluto ("lineas_con_cuota": [], "tiene_cuota_actualmente": false)
-      -> solo sirve como dato narrativo (tendencia, duelo probable...).
-    - Con cuota pero sin pick aprobado -> "lineas_con_cuota" trae los
-      datos completos (cuota, prob. implícita, consenso) para que la
-      IA calcule su propio edge con su propia estimación de probabilidad.
-    - Con cuota Y pick aprobado -> aparece aquí Y en el bloque "picks"
-      del informe (con el edge/EV ya calculado por nuestro modelo).
+    mercado un "pick" aprobado.
     """
     contexto = []
 
@@ -538,10 +672,6 @@ def construir_contexto_jugadores(partido: dict) -> List[dict]:
             lineas_con_cuota = _lineas_con_cuota(mercados_con_cuota.get(mercado, []))
 
             if _mercado_es_irrelevante(summary, lineas_con_cuota):
-                # Colapsado: sin cuota Y sin señal histórica real. Se
-                # conserva la media (por si acaso) pero se omite el
-                # desglose completo de overs/stdev, que aquí solo sería
-                # una lista de ceros/casi-ceros sin valor añadido.
                 stats_por_mercado[mercado] = {
                     "mean10": summary["mean10"],
                     "n_partidos_validos": summary["n_partidos_validos"],
@@ -556,7 +686,7 @@ def construir_contexto_jugadores(partido: dict) -> List[dict]:
                 "trend": summary["trend"],
                 "consistency": summary["consistency"],
                 "n_partidos_validos": summary["n_partidos_validos"],
-                "overs": summary["overs"],  # hit-rate por línea, si hay líneas conocidas
+                "overs": summary["overs"],
                 "factor_rival": factor_ajuste(contexto_rival, mercado),
                 "tiene_cuota_actualmente": len(lineas_con_cuota) > 0,
                 "lineas_con_cuota": lineas_con_cuota,
