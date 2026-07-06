@@ -115,6 +115,32 @@ def calcular_prioridad_manual(ev: Optional[float], n_casas: int, n_partidos: int
     return round(min(prioridad, 5.0), 1)
 
 
+MIN_HIT_RATE_SENSATO = 10.0   # por debajo de esto, "pick" es estadísticamente absurdo
+MIN_CONSISTENCY_SENSATA = 5   # consistencia casi nula = ruido puro, no señal
+
+
+def _es_absurdo_estadisticamente(summary: dict, linea: float, hit_rate: float) -> bool:
+    """
+    Guardarraíles que existían en el antiguo es_mercado_valido() y que
+    la separación en A/B/C/D no debe perder: un mercado con 0% de
+    acierto histórico (o casi) NO es "verificar manual, quizá tenga
+    valor" -- es descartado, sin importar cuán grande sea el EV que
+    produzca una cuota larga (26.0, 46.0...). El problema ahí no es de
+    cobertura de datos (no se arregla buscando una 2ª casa), es que el
+    propio histórico contradice la apuesta.
+    """
+    if hit_rate is not None and hit_rate < MIN_HIT_RATE_SENSATO:
+        return True
+
+    if summary is not None and summary.get("mean10", 0) < linea * 0.40:
+        return True
+
+    if summary is not None and summary.get("consistency", 100) < MIN_CONSISTENCY_SENSATA:
+        return True
+
+    return False
+
+
 def motivo_verificacion(n_casas: int, n_partidos: int, dispersion_cv: Optional[float]) -> dict:
     """
     Devuelve qué falló exactamente, la acción concreta a realizar (como
@@ -200,6 +226,20 @@ def clasificar_mercado(
     edge = (prob_modelo / 100 - prob_mercado_frac) * 100
     ev = (prob_modelo / 100 * mejor_cuota - 1) * 100
 
+    # Guardarraíles de sensatez estadística: esto NO es un problema de
+    # cobertura de datos (no se arregla buscando una 2ª casa ni
+    # ampliando muestra), es que el propio histórico contradice la
+    # apuesta. Va directo a C, sin importar el signo del edge/EV.
+    if _es_absurdo_estadisticamente(summary, linea, hit_rate):
+        return {
+            "categoria": CATEGORIA_DESCARTADO,
+            "edge": round(edge, 2),
+            "ev": round(ev, 2),
+            "n_partidos": n_partidos,
+            "hit_rate": hit_rate,
+            "motivo_descarte": "hist_insuficiente",
+        }
+
     cobertura_ok = (
         n_casas_consenso >= MIN_CASAS_CONSENSO
         and n_partidos >= MIN_PARTIDOS_MUESTRA
@@ -214,6 +254,7 @@ def clasificar_mercado(
             "ev": round(ev, 2),
             "n_partidos": n_partidos,
             "hit_rate": hit_rate,
+            "motivo_descarte": "ev_negativo",
         }
 
     if cobertura_ok:
@@ -325,8 +366,12 @@ def formatear_mercado_excluido(pick_parcial: dict, clasificacion: dict) -> str:
         razon = f"n={clasificacion.get('n_partidos', 0)} (< {MIN_PARTIDOS_MUESTRA_DURA} mínimo para opinar)"
         accion = "Ampliar historial / verificar que el jugador tiene más partidos registrados"
     elif categoria == CATEGORIA_DESCARTADO:
-        razon = f"EV negativo ({clasificacion.get('edge', 0):+.1f} pts de edge)"
-        accion = "Ninguna -- el modelo indica que no hay valor real"
+        if clasificacion.get("motivo_descarte") == "hist_insuficiente":
+            razon = f"Histórico no respalda la apuesta (hit_rate={clasificacion.get('hit_rate')}%, no es problema de cobertura)"
+            accion = "Ninguna -- aunque se consiga más cuota/muestra, el histórico ya contradice este mercado"
+        else:
+            razon = f"EV negativo ({clasificacion.get('edge', 0):+.1f} pts de edge)"
+            accion = "Ninguna -- el modelo indica que no hay valor real"
     elif categoria == CATEGORIA_VERIFICAR:
         razon = (
             clasificacion["motivo"]["faltantes"][0]["problema"]
