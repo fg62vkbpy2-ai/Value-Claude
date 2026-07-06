@@ -5,12 +5,22 @@ Interfaz web (Streamlit) del ValueBet Engine.
 Uso:
   1. Pega la URL del partido de StatsHub (la de la ficha del partido).
   2. Pulsa "Analizar partido".
-  3. Revisa la tabla de picks, ordenada por quality_score (o edge/ev).
-  4. Descarga el informe en JSON si quieres guardarlo (incluye tanto
-     los picks apostables como el contexto narrativo completo de cada
-     jugador, tenga o no cuota ofertada, para pasárselo a una IA).
+  3. Revisa la tabla de picks recomendados (categoría A), ordenada por
+     quality_score (o edge/ev), y las secciones de verificación manual
+     (categoría B) y mercados excluidos (C/D) más abajo.
+  4. Descarga el informe en JSON o TXT si quieres guardarlo/pasárselo
+     a una IA (incluye picks recomendados, cola de verificación manual,
+     mercados descartados y el contexto narrativo completo).
 
 Para desplegarla y usarla desde el iPhone, sigue el README.md.
+
+CAMBIO (ronda de las 4 categorías): antes se llamaba a mejores_picks(),
+que solo devuelve la categoría A (pick recomendado) -- las categorías
+B/C/D que añadimos en value_engine.py/clasificacion_mercados.py nunca
+llegaban a la interfaz ni al informe descargable, aunque el motor ya
+las calculaba. Ahora se usa mejores_picks_categorizado(), que devuelve
+las 4, y se muestran todas: recomendados en la tabla principal (como
+antes), verificación manual y mercados excluidos en secciones nuevas.
 """
 
 import json
@@ -19,7 +29,8 @@ import pandas as pd
 import streamlit as st
 
 from builder import construir_partido
-from value_engine import mejores_picks, construir_contexto_jugadores
+from value_engine import mejores_picks_categorizado, construir_contexto_jugadores, ordenar_picks
+from clasificacion_mercados import formatear_entrada_verificacion, formatear_mercado_excluido
 from export_texto import generar_informe_texto
 
 st.set_page_config(page_title="ValueBet Engine", page_icon="⚽", layout="wide")
@@ -48,7 +59,7 @@ with st.form("analizar"):
             "Si un jugador tiene varias líneas del mismo mercado "
             "(p. ej. tackles 0.5, 1.5, 2.5...), son apuestas muy "
             "correlacionadas entre sí. Con esta opción activada solo "
-            "se muestra la mejor de cada jugador+mercado."
+            "se muestra la mejor de cada jugador+mercado (por categoría)."
         ),
     )
     enviado = st.form_submit_button("Analizar partido")
@@ -238,12 +249,19 @@ if "partido" in st.session_state:
                     })
             st.dataframe(pd.DataFrame(filas_contexto), use_container_width=True, height=400, hide_index=True)
 
-    picks = mejores_picks(partido, top=top_n, ordenar_por=orden, deduplicar=deduplicar)
+    # Motor con las 4 categorías (A/B/C/D). "picks" (variable de abajo)
+    # sigue siendo solo la categoría A, para no tocar el resto de la UI
+    # ni el formato de la tabla/descargas -- pero ahora viene de
+    # categorias["recomendados"], no de mejores_picks() directamente.
+    categorias = mejores_picks_categorizado(partido, deduplicar=deduplicar)
+    picks = ordenar_picks(categorias["recomendados"], campo=orden)[:top_n]
 
     if not picks:
         st.warning(
-            "No se encontraron picks con edge positivo para este partido "
-            "(recuerda que sí puede haber contexto útil arriba aunque no haya picks)."
+            "No hay picks en categoría A (recomendados) para este partido. "
+            "Revisa la sección '🟡 Verificación manual' más abajo -- puede haber "
+            "mercados con edge positivo que solo necesitan un dato más para "
+            "confirmarse (otra casa, ampliar muestra...)."
         )
     else:
         df = pd.DataFrame(picks)
@@ -270,13 +288,66 @@ if "partido" in st.session_state:
             height=600,
         )
 
+    # 🟡 Verificación manual (categoría B): edge positivo pero falta
+    # algo de cobertura (pocas casas, muestra corta, dispersión alta).
+    # Ordenados por prioridad_manual: primero los que menos esfuerzo
+    # cuestan de confirmar para el EV que ofrecen.
+    verificar = categorias["verificar_manual"]
+    with st.expander(f"🟡 Verificación manual ({len(verificar)} mercados, por prioridad)", expanded=bool(verificar)):
+        if not verificar:
+            st.caption("Ninguno esta ronda.")
+        else:
+            st.caption(
+                "Mercados con valor aparente que el motor no puede confirmar solo "
+                "todavía -- cada uno lleva su checklist de qué falta y qué haría "
+                "falta para pasar a la tabla de recomendados."
+            )
+            for p in verificar:
+                st.markdown(
+                    formatear_entrada_verificacion(p, {
+                        "hit_rate": p.get("hit_rate"),
+                        "n_partidos": p.get("n_partidos_validos", p.get("games")),
+                        "prioridad_manual": p["prioridad_manual"],
+                        "motivo": p["motivo_verificacion"],
+                    }).replace("\n", "  \n")
+                )
+                st.divider()
+
+    # ⚪ Mercados excluidos (C: descartados por EV negativo, D: sin
+    # datos suficientes). Resumen corto -- responde de antemano a
+    # "¿por qué no sale X?" sin que haya que preguntarlo después.
+    excluidos = categorias["descartados"] + categorias["sin_datos"]
+    with st.expander(f"⚪ Mercados excluidos ({len(excluidos)})"):
+        if not excluidos:
+            st.caption("Ninguno esta ronda.")
+        else:
+            for p in excluidos:
+                clasificacion_min = {
+                    "categoria": p["categoria"],
+                    "edge": p.get("edge"),
+                    "hit_rate": p.get("hit_rate"),
+                    "motivo_descarte": p.get("motivo_descarte"),
+                    "n_partidos": p.get("n_partidos_validos", p.get("games", 0)),
+                    "motivo": p.get("motivo_verificacion", {"faltantes": [], "tareas": []}),
+                }
+                texto = formatear_mercado_excluido(p, clasificacion_min)
+                if texto:
+                    st.text(texto)
+                    st.divider()
+
     # El informe SIEMPRE se genera y se puede descargar, haya o no picks,
     # porque el contexto narrativo por sí solo ya tiene valor para la IA.
     informe = {
         "summary": resumen,
         "team_context": team_summary,
         "player_context": contexto_jugadores,
-        "picks": picks,
+        "picks": picks,  # compatibilidad: solo categoría A, como antes
+        "categorias": {
+            "recomendados": picks,
+            "verificar_manual": categorias["verificar_manual"],
+            "descartados": categorias["descartados"],
+            "sin_datos": categorias["sin_datos"],
+        },
     }
     nombre_sugerido = (
         f"{resumen['date'][:10]}_{resumen['home_team']}_vs_{resumen['away_team']}"
@@ -299,7 +370,7 @@ if "partido" in st.session_state:
             use_container_width=True,
         )
     with col_texto:
-        informe_texto = generar_informe_texto(partido, picks, contexto_jugadores)
+        informe_texto = generar_informe_texto(partido, categorias, contexto_jugadores)
         st.download_button(
             "📝 Descargar informe compacto (.txt, para pegar en la IA)",
             data=informe_texto,
@@ -329,6 +400,8 @@ with st.expander("ℹ️ Cómo leer la tabla"):
 - **hit_rate** / **games**: cuántas veces superó la línea de las últimas partidos "válidas" (excluyendo cameos de pocos minutos). Con `games` bajo (6-7) el hit_rate es menos fiable que con 9-10 — el `quality_score` ya lo penaliza, pero conviene mirarlo directamente si vas a apostar fuerte.
 - **factor_rival**: ajuste (±15% máx.) aplicado a la media del jugador según cómo de permeable es el rival en ese mercado (p. ej. un rival que concede muchos tiros sube ligeramente la probabilidad de "shots"). 1.00 = sin ajuste, no había suficiente dato del rival.
 - **n_casas_consenso** / **dispersion_cv**: cuántas casas coinciden en esa cuota y cuánto varían entre sí. Dispersión alta = las propias casas no tienen claro el número, así que el "edge" es menos fiable.
+- **🟡 Verificación manual**: mercados con edge positivo que el motor no puede confirmar solo todavía (pocas casas, muestra corta, dispersión alta). Cada uno trae un checklist de qué falta -- si se resuelve, el mercado pasaría a la tabla de recomendados.
+- **⚪ Mercados excluidos**: mercados con EV negativo (el modelo dice que no hay valor) o sin datos suficientes ni para opinar. Se listan para responder de antemano a "¿por qué no sale X?".
 - **Contexto adicional (sección aparte)**: histórico de TODOS los mercados de cada jugador, tengan o no cuota ofertada hoy. No son picks — es información extra para que la IA pueda razonar sobre duelos, tendencias y probabilidades de faltas/tiros/etc. aunque no haya nada que apostar directamente ahora mismo.
 - **🧮 Calculadora de mercados de equipo**: como StatsHub no da cuotas de equipo, aquí introduces tú la cuota real y se calcula todo con el mismo motor que los jugadores, sobre el histórico real del equipo — no es una estimación de una IA.
         """
