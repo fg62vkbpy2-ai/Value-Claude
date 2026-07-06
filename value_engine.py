@@ -417,6 +417,9 @@ def analizar_mercado(
     pick["edge"] = clasificacion.get("edge")
     pick["ev"] = clasificacion.get("ev")
 
+    if clasificacion["categoria"] == CATEGORIA_DESCARTADO:
+        pick["motivo_descarte"] = clasificacion.get("motivo_descarte")
+
     if clasificacion["categoria"] == CATEGORIA_VERIFICAR:
         pick["prioridad_manual"] = clasificacion["prioridad_manual"]
         pick["motivo_verificacion"] = clasificacion["motivo"]
@@ -581,6 +584,8 @@ def formatear_informe_texto(categorias: dict) -> str:
             clasificacion_min = {
                 "categoria": p["categoria"],
                 "edge": p.get("edge"),
+                "hit_rate": p.get("hit_rate"),
+                "motivo_descarte": p.get("motivo_descarte"),
                 "n_partidos": p.get("n_partidos_validos", p.get("games", 0)),
                 "motivo": p.get("motivo_verificacion", {"faltantes": [], "tareas": []}),
             }
